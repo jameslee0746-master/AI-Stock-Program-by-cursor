@@ -4348,6 +4348,9 @@ class TradingWindow(QMainWindow):
                     break
             if not key:
                 return False
+            session = self.engine.market_session_name()
+            if session == "휴장" and key in ("real", "scan_wait", "target_zero"):
+                return True
             if key in ("real", "scan_wait", "target_zero"):
                 count = int(self._after_hours_log_counts.get(key, 0) or 0)
                 if count >= 3:
