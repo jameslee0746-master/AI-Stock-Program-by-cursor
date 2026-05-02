@@ -4243,15 +4243,21 @@ class TradingWindow(QMainWindow):
             target_count = len(list(self.engine.stock_codes or []))
             if target_count <= 0:
                 self.lbl_hint.setVisible(True)
-                self.lbl_hint.setText("경고: 대상종목 0개 (검색/필터 결과 없음). 테스트스캔 또는 강제 재검색 확인")
-                now = datetime.datetime.now()
-                should_warn = (
-                    self._last_zero_target_warn_at is None
-                    or (now - self._last_zero_target_warn_at).total_seconds() >= 60.0
-                )
-                if should_warn:
-                    self._append_log("[WARN] 대상종목 0개: [SCAN] 시작/완료/최종 로그를 확인하세요.")
-                    self._last_zero_target_warn_at = now
+                market_open = self.engine._is_market_open()
+                session = self.engine.market_session_name()
+                if market_open:
+                    self.lbl_hint.setText("경고: 대상종목 0개 (검색/필터 결과 없음). 테스트스캔 또는 강제 재검색 확인")
+                    now = datetime.datetime.now()
+                    should_warn = (
+                        self._last_zero_target_warn_at is None
+                        or (now - self._last_zero_target_warn_at).total_seconds() >= 60.0
+                    )
+                    if should_warn:
+                        self._append_log("[WARN] 대상종목 0개: [SCAN] 시작/완료/최종 로그를 확인하세요.")
+                        self._last_zero_target_warn_at = now
+                else:
+                    self.lbl_hint.setText(f"장시간 아님({session}) - 종목 검색 대기 중")
+                    self._last_zero_target_warn_at = None
             else:
                 # 평상시에는 힌트 라벨을 숨겨 기존 UI 밀도를 유지
                 self.lbl_hint.setVisible(False)
