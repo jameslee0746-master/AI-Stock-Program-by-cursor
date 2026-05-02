@@ -19,7 +19,6 @@ env/
 
 # Runtime trading data and logs
 data/
-strategy_data/
 *.log
 *.csv
 scan_picks_*.json

@@ -1,0 +1,20 @@
+{
+  "generated_at": 1776315881.615682,
+  "window_size": 2,
+  "ai_used_count": 0,
+  "ai_used_ratio": 0.0,
+  "switch_count": 0,
+  "switch_ratio": 0.0,
+  "match_rule_count": 0,
+  "match_rule_ratio": 0.0,
+  "match_return_label_count": 0,
+  "match_return_label_ratio": 0.0,
+  "match_risk_label_count": 0,
+  "match_risk_label_ratio": 0.0,
+  "avg_active_score": 1.5601156336819242,
+  "avg_best_score": 8.857684599443544,
+  "avg_score_gap_to_best": 7.29756896576162,
+  "avg_data_coverage_ratio": 1.0,
+  "training_rows": 1,
+  "min_training_samples": 10
+}
