@@ -1,0 +1,35 @@
+# Python caches/build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local editor/session metadata
+.cursor/
+.vscode/
+
+# Runtime trading data and logs
+data/
+strategy_data/
+*.log
+*.csv
+scan_picks_*.json
+scan_picks_*.jsonl
+waiting_status_log.csv
+
+# Local backups and shortcuts
+backup_old_*/
+*.bak
+*.lnk
+
+# Local notes that may contain private operational details
+*.txt
