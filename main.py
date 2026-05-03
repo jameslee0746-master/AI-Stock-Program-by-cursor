@@ -4310,9 +4310,12 @@ class TradingWindow(QMainWindow):
             pass
 
     def _should_suppress_after_hours_log(self, msg: str) -> bool:
-        """장외 반복 상태 로그를 줄이고, 주문/오류/체결 등 중요 로그는 유지."""
+        """정규장 외 반복 상태 로그를 줄이고, 주문/오류/체결 등 중요 로그는 유지."""
         try:
-            if self.engine is None or self.engine._is_market_open():
+            if self.engine is None:
+                return False
+            session = self.engine.market_session_name()
+            if session == "정규장":
                 return False
             important_tokens = (
                 "[BUY-ORDER]",
@@ -4348,8 +4351,7 @@ class TradingWindow(QMainWindow):
                     break
             if not key:
                 return False
-            session = self.engine.market_session_name()
-            if session == "휴장" and key in ("real", "scan_wait", "target_zero"):
+            if session in ("휴장", "프리마켓") and key in ("real", "scan_wait", "target_zero"):
                 return True
             if key in ("real", "scan_wait", "target_zero"):
                 count = int(self._after_hours_log_counts.get(key, 0) or 0)
