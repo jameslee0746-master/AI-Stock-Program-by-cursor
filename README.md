@@ -1,1 +1,1 @@
-AI stock program by james lee.
+AI stock program by changyong lee.
