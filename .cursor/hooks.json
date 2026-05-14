@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "python .cursor/hooks/git_auto_commit.py",
+        "timeout": 120
+      }
+    ],
+    "afterTabFileEdit": [
+      {
+        "command": "python .cursor/hooks/git_auto_commit.py",
+        "timeout": 120
+      }
+    ],
+    "stop": [
+      {
+        "command": "python .cursor/hooks/git_auto_commit.py --session-end",
+        "timeout": 120
+      }
+    ]
+  }
+}

@@ -13,12 +13,18 @@ dist/
 venv/
 env/
 
-# Local editor/session metadata
-.cursor/
+# Local editor/session metadata (저장소에 포함할 Cursor 프로젝트 훅은 예외)
+.cursor/*
+!.cursor/hooks.json
+!.cursor/hooks/
+!.cursor/hooks/**
+.cursor/hooks/__pycache__/
 .vscode/
 
-# Runtime trading data and logs
-data/
+# Runtime trading data and logs — CSV·주문로그는 개인/계좌 정보 위험으로 제외,
+# 학습 산출물(pkl)만 필요 시 버전 관리(공개 저장소면 민감 정보 없는지 확인).
+data/*
+!data/ai_buy_model.pkl
 *.log
 *.csv
 scan_picks_*.json
