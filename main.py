@@ -5,14 +5,18 @@ import datetime
 import threading
 import time
 import csv
+from collections import defaultdict, deque
 import io
 import contextlib
 import logging
+import json
+import math
+import pickle
 import warnings
 from zoneinfo import ZoneInfo
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from PyQt5.QAxContainer import QAxWidget
 from PyQt5.QtCore import QEventLoop, QTimer, QTime, Qt, pyqtSignal
@@ -32,11 +36,19 @@ from PyQt5.QtWidgets import (
 )
 
 try:
+    from sklearn.base import clone
+    from sklearn.calibration import CalibratedClassifierCV
     from sklearn.ensemble import RandomForestClassifier
+    from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
     AI_AVAILABLE = True
 except Exception:
+    clone = None  # type: ignore
+    CalibratedClassifierCV = None  # type: ignore
     RandomForestClassifier = None  # type: ignore
+    brier_score_loss = None  # type: ignore
+    log_loss = None  # type: ignore
+    roc_auc_score = None  # type: ignore
     AI_AVAILABLE = False
 
 try:
@@ -66,9 +78,16 @@ if yf is not None:
         except Exception:
             pass
 
-from performance import TradeTracker
+from performance import TradeTracker, fifo_open_positions_from_records
 from gui import PerformanceDashboard
-from strategy_manager import StrategyManager, STRATEGY_AI, STRATEGY_TREND, STRATEGY_VOLUME
+from strategy_manager import (
+    StrategyManager,
+    STRATEGY_AI,
+    STRATEGY_QUALITY_DIP,
+    STRATEGY_TREND,
+    STRATEGY_VOLUME,
+)
+import ai_objective_shared as aos
 
 
 # =========================
@@ -97,9 +116,10 @@ SCREEN_NO = "0101"
 REAL_SCREEN_NO = "9001"
 
 # 전략 강화 파라미터
-MA20_ENTRY_GAP_PCT = -0.0060  # MA20 대비 더 아래까지 허용(진입 확대)
+# (완화 1단계) BUY-BLOCK "MA20 대비 너무 낮음" 완화: MA20 아래 허용 폭 소폭 확대
+MA20_ENTRY_GAP_PCT = -0.0120  # was -0.0060
 MAX_PRICE_TO_MA20_PCT = 0.28  # 과열 상한 완화(추격 허용)
-MAX_CONCURRENT_POSITIONS = 8  # 동시 보유 한도(집중 투자)
+MAX_CONCURRENT_POSITIONS = 5  # 동시 보유 한도(손실일 낙폭 축소)
 
 # +4.5% 도달 후 바로 청산하지 않고, 트레일링 스탑으로 추가 수익 노리기
 USE_TRAIL_AFTER_TP = True
@@ -111,18 +131,20 @@ TRAIL_MA20_FACTOR = 1.0
 
 # RSI 필터
 RSI_PERIOD = 14
-RSI_ENTRY_MIN = 32.0  # RSI 하한 완화
+# (완화 1단계) "RSI 범위 이탈" 여지 / "RSI 상승폭 부족" 완화
+RSI_ENTRY_MIN = 30.0  # was 32.0
 RSI_ENTRY_MAX = 82.0  # RSI 상한 완화
-RSI_MIN_DELTA = 0.05  # RSI 상승폭 요구 완화
+RSI_MIN_DELTA = 0.03  # was 0.05; "RSI 상승 아님"은 그대로(전일 대비 strictly 상승)
 
 # 거래량 필터
 VOL_AVG_PERIOD = 20
-VOL_ENTRY_RATIO_MIN = 0.95  # 평균 대비 거래량 요구 완화
-VOL_ENTRY_GROWTH_MIN = 0.94  # 전일 대비 거래량 감소 허용 범위 확대
+# (완화 1단계) "거래량 평균비 부족" / "전일대비 거래량 부족" 완화
+VOL_ENTRY_RATIO_MIN = 0.88  # was 0.95
+VOL_ENTRY_GROWTH_MIN = 0.88  # was 0.94
 
 # AI 모델(추가 필터): LightGBM/XGBoost가 있으면 우선 사용하고, 없으면 RandomForest로 fallback
 AI_TRAIN_COUNT = 120  # 학습용 최근 일봉 개수
-AI_PROBA_ENTRY_MIN = 0.30  # AI 진입 문턱 하향
+AI_PROBA_ENTRY_MIN = 0.42  # was 0.45; "AI 상승확률 부족" 소폭 완화(동적 가산은 유지)
 AI_RET_LABEL_THRESHOLD = 0.002  # 비용 차감 후 기대수익률이 이 값보다 크면 상승 라벨
 AI_MIN_TOTAL_SAMPLES = 200
 AI_N_ESTIMATORS = 200
@@ -131,6 +153,25 @@ AI_LABEL_HORIZON_DAYS = 3  # 매수 후 N거래일 안의 손절/익절 도달 �
 AI_ROUND_TRIP_COST_PCT = 0.0030  # 수수료+세금 근사 왕복 비용
 AI_SLIPPAGE_PCT = 0.0015  # 시장가 체결 미끄러짐 보수 반영
 AI_MODEL_BACKEND = os.environ.get("AI_MODEL_BACKEND", "auto").strip().lower()
+AI_MODEL_FILENAME = os.environ.get("AI_MODEL_FILENAME", "ai_buy_model.pkl")
+AI_MODEL_MAX_AGE_DAYS = int(os.environ.get("AI_MODEL_MAX_AGE_DAYS", "14"))
+AI_VAL_FRAC = float(os.environ.get("AI_VAL_FRAC", "0.2"))
+AI_VAL_MIN_ROWS_PER_CODE = int(os.environ.get("AI_VAL_MIN_ROWS_PER_CODE", "12"))
+AI_CALIBRATION_MIN_VAL = int(os.environ.get("AI_CALIBRATION_MIN_VAL", "30"))
+AI_CALIBRATION_METHOD = os.environ.get("AI_CALIBRATION_METHOD", "sigmoid").strip().lower()
+AI_TRAIN_MERGE_BACK_MIN = int(os.environ.get("AI_TRAIN_MERGE_BACK_MIN", "80"))
+AI_METRICS_JSON_BASENAME = os.environ.get("AI_METRICS_JSON_BASENAME", "ai_calibration_metrics.json")
+# 트렌드/거량(STRATEGY_TREND·VOLUME)일 때도 진입 분류기 확률을 완화 문턱으로 적용(모델 없으면 스킵)
+AI_SOFT_FILTER_TECH_STRATEGIES = os.environ.get("AI_SOFT_FILTER_TECH_STRATEGIES", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+)
+# _dynamic_ai_entry_min() 대비 추가 완화(음수=더 낮은 proba 허용)
+AI_TECH_STRATEGY_ENTRY_DELTA = float(os.environ.get("AI_TECH_STRATEGY_ENTRY_DELTA", "-0.06"))
+# 완화 문턱의 절대 하한(시장 악화로 dynamic이 높아져도 이 값 미만이면 불가)
+AI_TECH_STRATEGY_ENTRY_FLOOR = float(os.environ.get("AI_TECH_STRATEGY_ENTRY_FLOOR", "0.38"))
 
 # 실전 손실 제어: 매도 사유 기록, 손절 후 재진입 제한, 약세장/연속손실 매수 축소
 STOP_LOSS_REENTRY_COOLDOWN_SEC = 4 * 3600
@@ -143,7 +184,16 @@ DAILY_LOSS_SOFT_LIMIT_PCT = -0.008
 DAILY_LOSS_HARD_LIMIT_PCT = -0.015
 DAILY_LOSS_AI_ENTRY_ADD = 0.08
 DAILY_LOSS_MAX_CONCURRENT_POSITIONS = 2
-BUY_SCORE_MIN = 0.0
+DAILY_AI_LOSS_EXIT_BLOCK_COUNT = 2
+DAILY_WIN_RATE_BLOCK_MIN_SELLS = 3
+DAILY_WIN_RATE_BLOCK_PCT = 0.30
+
+# 잔고(TR opw00018)와 거래 CSV(FIFO 재구성) 불일치 감지
+RECONCILE_AVG_REL_TOL = 0.015  # 평단 상대 허용 오차 (1.5%)
+RECONCILE_AVG_ABS_MIN_KRW = 40.0  # 절대 허용(원); 틱 차이 무시
+RECONCILE_ISSUE_COOLDOWN_SEC = 300.0  # 동일 불일치 요약 재로그 최소 간격
+
+BUY_SCORE_MIN = 0.30  # was 0.35; 랭킹 1위만 매수할 때 컷 완화
 PARTIAL_TAKE_PROFIT_ENABLED = True
 PARTIAL_TAKE_PROFIT_RATIO = 0.5
 SCALE_IN_ENABLED = True
@@ -208,6 +258,36 @@ SCAN_MIN_DAILY_VOLUME = 120_000.0  # 1차 유동성 기준 완화
 SCAN_MIN_DAILY_VOLUME_RELAXED = 40_000.0  # 테스트스캔 ON 1차 추가 완화
 SCAN_RELAXED_MAX_UNIVERSE = 800  # 테스트스캔 ON 시 유니버스 샘플 상한
 SCAN_RELAXED_TIMEOUT_SEC = 120  # 테스트스캔 ON 시 스캔 최대 시간(초)
+# 우량 대형 근사: KOSPI+KOSDAQ 통합 시총 상위 N종만 스캔 유니버스(0=전체). 환경변수 SCAN_QUALITY_MC_TOP_N 로 덮어씀.
+# pykrx·네트워크 불가 시 자동 생략 후 전체 유니버스로 스캔합니다.
+SCAN_QUALITY_MC_TOP_N = int(os.environ.get("SCAN_QUALITY_MC_TOP_N", "200"))
+# 1(기본): 스캔 호출마다 시총상위 적용 ↔ 전 종목 유니버스를 번갈아 사용. 0 이면 항상 시총 필터만(또는 TOP_N=0이면 의미 없음).
+SCAN_QUALITY_ROTATE_WITH_FULL = os.environ.get("SCAN_QUALITY_ROTATE_WITH_FULL", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+# 우량 스캔 차례(SCAn 시총상위 intent)에서 시총허용 종목에 적용하는 눌림 진입(전략선택기 비포함)
+QUALITY_DIP_ENABLED = os.environ.get("QUALITY_DIP_ENABLED", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+QDIP_MAX_PRICE_ABOVE_MA20_PCT = float(os.environ.get("QDIP_MAX_PRICE_ABOVE_MA20_PCT", "0.012"))
+QDIP_MIN_PRICE_VS_MA20_PCT = float(os.environ.get("QDIP_MIN_PRICE_VS_MA20_PCT", "-0.14"))
+QDIP_RSI_MAX_ENTRY = float(os.environ.get("QDIP_RSI_MAX_ENTRY", "48"))
+QDIP_RSI_MIN_ENTRY = float(os.environ.get("QDIP_RSI_MIN_ENTRY", "22"))
+QDIP_RSI_DROP_MAX_TOLERANCE = float(os.environ.get("QDIP_RSI_DROP_MAX_TOLERANCE", "2.0"))
+QDIP_VOL_RATIO_MIN = float(os.environ.get("QDIP_VOL_RATIO_MIN", "0.72"))
+QDIP_VOL_DAY_GROWTH_MIN = float(os.environ.get("QDIP_VOL_DAY_GROWTH_MIN", "0.88"))
+QDIP_REQUIRE_MA5_GT_MA20 = os.environ.get("QDIP_REQUIRE_MA5_GT_MA20", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+)
 MIN_ENTRY_PRICE = 2000  # 매수 하한가(원)
 MAX_ENTRY_PRICE = 1_000_000  # 매수 상한가(원)
 BUDGET_BASED_ORDER_QTY = True  # 총예산/남은 슬롯 기준으로 주문수량 자동 계산
@@ -215,7 +295,16 @@ MAX_POSITION_BUDGET_PCT = 0.12  # 한 종목 최대 투자비중(추정예탁자
 ACTIVE_BUY_TARGET_LIMIT = 100  # 실매수 대상은 스캔 상위 N개로 압축
 ORDER_TIMEOUT_COOLDOWN_SEC = 600  # 매수 timeout 후 같은 종목 재주문 대기
 ORDER_TIMEOUT_LATE_FILL_GUARD_SEC = int(os.environ.get("ORDER_TIMEOUT_LATE_FILL_GUARD_SEC", "1800"))
-MAX_SINGLE_BUY_ORDER_KRW = float(os.environ.get("MAX_SINGLE_BUY_ORDER_KRW", "500000"))
+MAX_SINGLE_BUY_ORDER_KRW = float(os.environ.get("MAX_SINGLE_BUY_ORDER_KRW", "300000"))
+# 진입 변동성 / 실행 리스크(전역 매수 간격·시간당 한도·ATR 게이트)
+# USE_ENTRY_ATR_GATE=1 이고 ENTRY_ATR_MAX_PCT>0 이면 ma[code].atr_pct 초과 시 신규 매수만 차단(스케일인은 buy_market만 타고 _should_buy_common은 안 탐)
+USE_ENTRY_ATR_GATE = os.environ.get("USE_ENTRY_ATR_GATE", "0").strip().lower() in ("1", "true", "yes", "y")
+ENTRY_ATR_MAX_PCT = float(os.environ.get("ENTRY_ATR_MAX_PCT", "0"))
+ATR_INVERSE_ORDER_CAP = os.environ.get("ATR_INVERSE_ORDER_CAP", "0").strip().lower() in ("1", "true", "yes", "y")
+ENTRY_ATR_REF_PCT = float(os.environ.get("ENTRY_ATR_REF_PCT", "0.02"))
+ATR_ORDER_CAP_MIN_FACTOR = float(os.environ.get("ATR_ORDER_CAP_MIN_FACTOR", "0.25"))
+MIN_SEC_BETWEEN_ANY_BUYS = float(os.environ.get("MIN_SEC_BETWEEN_ANY_BUYS", "0"))
+MAX_NEW_BUYS_PER_HOUR = int(os.environ.get("MAX_NEW_BUYS_PER_HOUR", "0"))
 SCAN_CACHE_TTL_SEC = 1800
 # 기본 사용 계좌. 환경변수 KIWOOM_ACCOUNT_NO가 있으면 그 값이 우선합니다.
 DEFAULT_KIWOOM_ACCOUNT_NO = "8125126211"
@@ -247,6 +336,111 @@ _SCAN_BAD_WARNED_TICKERS = set()
 _SCAN_BAD_WARNED_TICKERS_LOCK = threading.Lock()
 # yfinance 캐시 메모리 보호용 상한
 SCAN_OHLCV_CACHE_MAX_ENTRIES = int(os.environ.get("SCAN_OHLCV_CACHE_MAX_ENTRIES", "800"))
+
+_MC_TOP_FILTER_CACHE_DAY: str = ""
+_MC_TOP_FILTER_CACHE_N: int = 0
+_MC_TOP_FILTER_CACHE_SET: Optional[Set[str]] = None
+_MC_TOP_FILTER_CACHE_LOCK = threading.Lock()
+
+_SCAN_MC_ROTATION_COUNT = 0
+_SCAN_MC_ROTATION_LOCK = threading.Lock()
+
+
+def _scan_should_apply_mc_cap() -> bool:
+    """시총 상위 필터를 이번 스캔에 적용할지. 로테이션 시 짝번=우량(시총제한), 홀번=전체."""
+    mc_n = max(0, int(SCAN_QUALITY_MC_TOP_N))
+    if mc_n <= 0:
+        return False
+    if not SCAN_QUALITY_ROTATE_WITH_FULL:
+        return True
+    global _SCAN_MC_ROTATION_COUNT
+    with _SCAN_MC_ROTATION_LOCK:
+        apply_cap = (_SCAN_MC_ROTATION_COUNT % 2 == 0)
+        _SCAN_MC_ROTATION_COUNT += 1
+    return apply_cap
+
+
+def _mc_top_allowlist_for_scan(top_n: int) -> Optional[Set[str]]:
+    """
+    KRX 기준(KOSPI+KOSDAQ 합산) 시가총액 상위 top_n 종목코드 집합(6자리).
+    pykrx 미설치·조회 실패 시 None 반환 → 호출측에서 전체 유니버스 유지.
+    """
+    global _MC_TOP_FILTER_CACHE_DAY, _MC_TOP_FILTER_CACHE_N, _MC_TOP_FILTER_CACHE_SET
+
+    if top_n <= 0:
+        return None
+    today_s = datetime.date.today().isoformat()
+    with _MC_TOP_FILTER_CACHE_LOCK:
+        if (
+            _MC_TOP_FILTER_CACHE_SET is not None
+            and _MC_TOP_FILTER_CACHE_N == top_n
+            and _MC_TOP_FILTER_CACHE_DAY == today_s
+        ):
+            return set(_MC_TOP_FILTER_CACHE_SET)
+
+    try:
+        from pykrx import stock as krx_stock  # type: ignore
+    except ImportError:
+        _scan_log("[SCAN] 시총상위 필터: pykrx 없음 (`pip install pykrx`). 당일은 전체 유니버스로 스캔합니다.")
+        return None
+
+    from datetime import date as date_cls, timedelta
+
+    caps: Dict[str, float] = {}
+    for back in range(14):
+        cand = date_cls.today() - timedelta(days=back)
+        if cand.weekday() >= 5:
+            continue
+        try:
+            if cand in _krx_holidays(cand.year):
+                continue
+        except Exception:
+            pass
+        ds = cand.strftime("%Y%m%d")
+        got_any = False
+        for mkt in ("KOSPI", "KOSDAQ"):
+            try:
+                df = krx_stock.get_market_cap_by_ticker(ds, market=mkt)
+            except Exception:
+                df = None
+            if df is None or getattr(df, "empty", True):
+                continue
+            cap_col = "시가총액" if "시가총액" in df.columns else ""
+            if not cap_col:
+                continue
+            got_any = True
+            for idx in df.index:
+                raw = str(idx).strip()
+                dig = "".join(ch for ch in raw if ch.isdigit())
+                if len(dig) < 6:
+                    continue
+                c6 = dig[-6:]
+                if len(c6) != 6 or not c6.isdigit():
+                    continue
+                try:
+                    cap = float(df.loc[idx, cap_col])
+                except Exception:
+                    try:
+                        cap = float(df.loc[str(idx), cap_col])
+                    except Exception:
+                        continue
+                if cap > 0:
+                    caps[c6] = max(caps.get(c6, 0.0), cap)
+        if got_any and caps:
+            break
+
+    if not caps:
+        _scan_log("[SCAN] 시총상위 필터: KRX 시총 데이터 미수신 — 전체 유니버스로 스캔합니다.")
+        return None
+
+    ranked = sorted(caps.items(), key=lambda kv: kv[1], reverse=True)
+    top_set: Set[str] = {c for c, _ in ranked[:top_n]}
+    with _MC_TOP_FILTER_CACHE_LOCK:
+        _MC_TOP_FILTER_CACHE_DAY = today_s
+        _MC_TOP_FILTER_CACHE_N = top_n
+        _MC_TOP_FILTER_CACHE_SET = set(top_set)
+    _scan_log(f"[SCAN] 시총 유니버스: KOSPI+KOSDAQ 합산 상위 {top_n}종 중 {len(top_set)}종 로드")
+    return top_set
 
 
 def _kiwoom_login_error_text(err_code: object) -> str:
@@ -479,28 +673,50 @@ def _auto_scan_parallel_params(total_codes: int) -> tuple:
     return workers, chunk
 
 
-def scan_market(kiwoom: "KiwoomOpenAPI", top_n: int = SCAN_TOP_N) -> List[str]:
+def scan_market(kiwoom: "KiwoomOpenAPI", top_n: int = SCAN_TOP_N) -> Tuple[List[str], bool]:
     """
     전체 시장 -> 1차 필터 -> 2차 전략 -> 최종 top_n 종목.
     - 거래량: 최근 3일 평균 > 20일 평균 * 1.45
     - 추세: MA5 > MA20
     - 종가 > MA20
     - 최종: 거래량 증가율(vol3/vol20) 상위 top_n
+    - SCAN_QUALITY_MC_TOP_N>0 이고 SCAN_QUALITY_ROTATE_WITH_FULL 이면 스캔 호출마다
+      시총 상위 우량 유니버스 ↔ 전 종목 유니버스를 번갈아 적용합니다.
+    Returns
+    -------
+    (선정 종목코드 목록, quality_scan_intent)
+        quality_scan_intent True 이면 이번 스캔은 시총상위 슬롯(다음 매수는 시총허용종목에 눌림 규칙 바인딩).
     """
     _scan_console(
         f"[SCAN] ===== 시작 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
         f"top_n={top_n} ====="
     )
+    mc_n = max(0, int(SCAN_QUALITY_MC_TOP_N))
+    apply_cap = _scan_should_apply_mc_cap() if mc_n > 0 else False
+    quality_scan_intent = bool(mc_n > 0 and apply_cap)
+
     try:
         codes = kiwoom.get_all_kr_codes()
         # 비정상 코드 제외(요청 최소화)
         codes = [c for c in codes if isinstance(c, str) and len(c.strip()) == 6 and c.strip().isdigit()]
     except Exception as e:
         _scan_log(f"[SCAN] code universe load failed: {e}")
-        return []
+        return [], quality_scan_intent
     if not codes:
         _scan_log("[SCAN] no universe codes")
-        return []
+        return [], quality_scan_intent
+
+    if mc_n > 0 and apply_cap:
+        allow = _mc_top_allowlist_for_scan(mc_n)
+        if allow is not None:
+            before_ct = len(codes)
+            codes = [str(c).strip() for c in codes if str(c).strip() in allow]
+            _scan_log(f"[SCAN] 우량 로테이션: 시총 상위 적용 유니버스 {before_ct} -> {len(codes)}종목 (기준≤{mc_n})")
+        else:
+            _scan_log("[SCAN] 시총 상위 목록 미사용(pykrx/데이터 없음) — 원래 유니버스로 진행")
+    elif mc_n > 0 and not apply_cap:
+        _scan_log("[SCAN] 우량 로테이션: 이번 스캔=전체 유니버스 (시총 상위 필터 생략, 비우량 포함). 다음 스캔=시총상위")
+
     if SCAN_RELAXED_MODE and len(codes) > int(SCAN_RELAXED_MAX_UNIVERSE):
         # 테스트스캔은 즉시성 우선: 전체 대신 샘플링으로 빠르게 후보를 확보
         step = max(1, len(codes) // int(SCAN_RELAXED_MAX_UNIVERSE))
@@ -613,7 +829,7 @@ def scan_market(kiwoom: "KiwoomOpenAPI", top_n: int = SCAN_TOP_N) -> List[str]:
             f"[SCAN] 일반모드 보정: 2차 통과 0건 -> 1차 상위 {len(selected)}종목 대체"
         )
     _scan_log(f"[SCAN] 최종 {len(selected)}종목: {selected}")
-    return selected
+    return selected, quality_scan_intent
 
 
 def run_backtest_for_codes(codes: List[str], lookback: int = BACKTEST_LOOKBACK_BARS) -> Dict[str, object]:
@@ -876,12 +1092,125 @@ def _is_us_regular_market_open(now_kst: Optional[datetime.datetime] = None) -> b
     return _us_market_session_name(now_kst) == "정규장"
 
 
+def _ai_ece_binary(y_true: List[int], proba_pos: List[float], n_bins: int = 10) -> float:
+    """예측 신뢰도 vs 실제 양비율(간단 ECE)."""
+    n = min(len(y_true), len(proba_pos))
+    if n <= 0 or n_bins <= 0:
+        return 0.0
+    ece_w = 0.0
+    for bi in range(n_bins):
+        lo = bi / float(n_bins)
+        hi = (bi + 1) / float(n_bins)
+        confs_acc: List[float] = []
+        labels_acc: List[int] = []
+        for yt, pv in zip(y_true[:n], proba_pos[:n]):
+            p = float(pv)
+            last = bi == n_bins - 1
+            if last:
+                ok = p >= lo - 1e-15
+            else:
+                ok = lo <= p < hi - 1e-15
+            if ok:
+                confs_acc.append(p)
+                labels_acc.append(int(yt))
+        if not labels_acc:
+            continue
+        w = len(labels_acc) / float(n)
+        avg_conf = sum(confs_acc) / float(len(confs_acc))
+        avg_acc = sum(labels_acc) / float(len(labels_acc))
+        ece_w += abs(avg_conf - avg_acc) * w
+    return float(ece_w)
+
+
+def _ai_binary_metrics_safe(
+    y_true: List[int], proba_pos: List[float]
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    if not y_true or not proba_pos or brier_score_loss is None:
+        return out
+    try:
+        m = min(len(y_true), len(proba_pos))
+        yt = [int(y_true[i]) for i in range(m)]
+        pp = [max(1e-6, min(1.0 - 1e-6, float(proba_pos[i]))) for i in range(m)]
+        out["brier"] = float(brier_score_loss(yt, pp))
+        uniq = set(yt)
+        if len(uniq) >= 2 and roc_auc_score is not None:
+            out["auc"] = float(roc_auc_score(yt, pp))
+        if log_loss is not None and len(uniq) >= 2:
+            out["logloss"] = float(log_loss(yt, pp, labels=[0, 1]))
+        out["ece"] = float(_ai_ece_binary(yt, pp))
+    except Exception:
+        pass
+    return out
+
+
+def _ai_label_distribution_report(y: List[int], net_rets: List[float]) -> Dict[str, Any]:
+    if not y:
+        return {}
+    pos = sum(1 for v in y if int(v) == 1)
+    nn = sorted(float(x) for x in net_rets) if net_rets else []
+    pct = lambda q: nn[int(round((len(nn) - 1) * q))] if nn else None
+    return {
+        "n_samples": len(y),
+        "pos_rate": round(pos / max(1, len(y)), 6),
+        "neg_rate": round(1.0 - pos / max(1, len(y)), 6),
+        "net_ret_p10": pct(0.1),
+        "net_ret_p50": pct(0.5),
+        "net_ret_p90": pct(0.9),
+    }
+
+
+def _ai_write_calibration_json(path: str, report: Dict[str, Any]) -> None:
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        _log(f"[AI] calibration metrics JSON 저장 실패: {path} ({e})")
+
+
+def _normalize_kiwoom_account_for_match(acc: str) -> str:
+    """Chejan 9201과 engine.account 비교용(숫자만)."""
+    return "".join(ch for ch in str(acc or "") if ch.isdigit())
+
+
+def _parse_chejan_code9001(raw: str) -> str:
+    """Chejan 종목코드 FID 9001 → 6자리 숫자."""
+    s = str(raw or "").strip().lstrip("A")
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) >= 6:
+        c6 = digits[-6:]
+        return c6 if c6.isdigit() else ""
+    return ""
+
+
+def _safe_opw_money_int(cell: object) -> Optional[int]:
+    """opw00004 등 TR 금액 필드 안전 파싱(부호·콤마)."""
+    raw = str(cell or "").strip().replace(",", "").replace(" ", "")
+    if not raw:
+        return None
+    neg = raw.startswith("-") or raw.startswith("\u2212")
+    body = raw[1:] if neg else raw
+    digits = "".join(ch for ch in body if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        v = int(digits)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+SCREEN_NO_ACCOUNT_EVAL = "0404"
+
+
 class KiwoomOpenAPI(QAxWidget):
     """
     KHOpenAPICtrl.1 을 PyQt5 QAxWidget으로 감싼 래퍼.
     - CommConnect 로그인
     - TR 요청/응답(QEventLoop 대기)
     - 실시간 주식체결 데이터 수신
+    - 체결·주문통보(OnReceiveChejanData) → 엔진 콜백 on_chejan_data
     """
 
     def __init__(self):
@@ -902,9 +1231,54 @@ class KiwoomOpenAPI(QAxWidget):
         self.OnReceiveTrData.connect(self._on_receive_tr_data)
         self.OnReceiveRealData.connect(self._on_receive_real_data)
         self.OnReceiveMsg.connect(self._on_receive_msg)
+        try:
+            self.OnReceiveChejanData.connect(self._on_receive_chejan_data)
+        except Exception:
+            pass
 
         # 콜백(엔진에서 주입)
         self.on_real_price = None  # type: ignore
+        self.on_chejan_data = None  # Callable[[Dict[str, str]], None] | None
+
+    def _chejan_get(self, fid: str) -> str:
+        try:
+            v = self.dynamicCall("GetChejanData(QString)", str(fid))
+            return str(v or "").strip()
+        except Exception:
+            try:
+                v = self.dynamicCall("GetChejanData(int)", int(str(fid)))
+                return str(v or "").strip()
+            except Exception:
+                return ""
+
+    def _on_receive_chejan_data(self, *args):
+        fn = getattr(self, "on_chejan_data", None)
+        if not callable(fn):
+            return
+        try:
+            gubun = str(args[0] if len(args) > 0 else "").strip()
+        except Exception:
+            gubun = ""
+        if gubun != "0":
+            return
+        try:
+            fields = {
+                "gubun": gubun,
+                "9201": self._chejan_get("9201"),
+                "9203": self._chejan_get("9203"),
+                "9001": self._chejan_get("9001"),
+                "913": self._chejan_get("913"),
+                "907": self._chejan_get("907"),
+                "905": self._chejan_get("905"),
+                "910": self._chejan_get("910"),
+                "911": self._chejan_get("911"),
+                "909": self._chejan_get("909"),
+                "908": self._chejan_get("908"),
+                "902": self._chejan_get("902"),
+            }
+            fn(fields)
+        except Exception:
+            pass
 
     def _on_event_connect(self, *args):
         # Kiwoom 이벤트 시그니처가 환경에 따라 타입/파라미터 형태가 달라질 수 있어
@@ -1223,6 +1597,40 @@ class KiwoomOpenAPI(QAxWidget):
             pass
         return data
 
+    def request_account_eval_summary(
+        self, account: str, password: str = "", timeout_ms: int = 15000
+    ) -> Optional[Dict[str, int]]:
+        """
+        opw00004 계좌평가현황 — 싱글데이터 손익 항목(증광 HTS 「누적투자손익」 등와 정합 가능).
+        """
+        rqname = "REQ_OPW00004"
+        self._tr_loops[rqname] = QEventLoop()
+        self._tr_responses.pop(rqname, None)
+
+        self.dynamicCall("SetInputValue(QString, QString)", "계좌번호", account)
+        self.dynamicCall("SetInputValue(QString, QString)", "비밀번호", password)
+        self.dynamicCall("SetInputValue(QString, QString)", "상장폐지조회구분", "0")
+        self.dynamicCall("SetInputValue(QString, QString)", "비밀번호입력매체구분", "00")
+        self.dynamicCall(
+            "CommRqData(QString, QString, int, QString)",
+            rqname,
+            "opw00004",
+            0,
+            SCREEN_NO_ACCOUNT_EVAL,
+        )
+        loop = self._tr_loops[rqname]
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec_()
+        timer.stop()
+        self._tr_loops.pop(rqname, None)
+        data = self._tr_responses.get(rqname)
+        if not isinstance(data, dict):
+            return None
+        return dict(data)
+
     def request_current_price(self, code: str, timeout_ms: int = 3000) -> int:
         """opt10001 현재가 TR로 단일 종목 현재가 조회."""
         clean = str(code).replace(".KS", "").replace(".KQ", "").strip()
@@ -1487,6 +1895,24 @@ class KiwoomOpenAPI(QAxWidget):
                         }
 
                 self._tr_responses[rqname] = holdings
+
+            elif rqname == "REQ_OPW00004" and str(trcode).lower() == "opw00004":
+                out: Dict[str, int] = {}
+                for fld in ("당일투자손익", "당월투자손익", "누적투자손익", "손익금액"):
+                    try:
+                        s = self.dynamicCall(
+                            "GetCommData(QString, QString, int, QString)",
+                            trcode,
+                            rqname,
+                            0,
+                            fld,
+                        )
+                    except Exception:
+                        continue
+                    vi = _safe_opw_money_int(s)
+                    if vi is not None:
+                        out[fld] = int(vi)
+                self._tr_responses[rqname] = out
 
         finally:
             loop = self._tr_loops.get(rqname)
@@ -1755,9 +2181,16 @@ class TradingEngine:
         # AI 모델
         self.ai_model = None
         self.ai_trained_date: Optional[datetime.date] = None
+        self.ai_model_name: str = ""
+        self.ai_model_samples: int = 0
+        self.ai_model_loaded_from_disk: bool = False
 
         # 멀티 전략 비교·선택(strategy_manager.py)
         self.strategy_manager: Optional[StrategyManager] = None
+
+        # 스캔 로테이션 슬롯(시총 상위)·시총 허용 집합 — 우량 종목만 눌림 진입 규칙 적용용
+        self._scan_quality_intent_active: bool = False
+        self._quality_mcap_allowlist: Set[str] = set()
 
         # 중복 주문 방지
         self.pending_buy: Dict[str, bool] = {c: False for c in stock_codes}
@@ -1767,6 +2200,12 @@ class TradingEngine:
         self.buy_cooldown_until: Dict[str, datetime.datetime] = {}
         self.pending_orders: Dict[str, Dict[str, object]] = {}
         self.realized_pnl_krw: float = 0.0
+        # opw00004 계좌평가(키움 HTS 집계·수수료 반영 가능) — 주기 호출 후 갱신
+        self.opw_daily_invest_pnl_krw: Optional[int] = None
+        self.opw_month_invest_pnl_krw: Optional[int] = None
+        self.opw_accum_invest_profit_loss_krw: Optional[int] = None
+        self.opw_holdings_eval_pnl_krw: Optional[int] = None
+        self.opw_eval_fetched_at: Optional[datetime.datetime] = None
         self._scale_in_done: Dict[str, bool] = {}
         self._daily_report_done_date: Optional[datetime.date] = None
         self._auto_bt_running = False
@@ -1785,6 +2224,7 @@ class TradingEngine:
         self._trade_feature_cache: Dict[str, tuple] = {}
         base = os.path.dirname(os.path.abspath(__file__))
         self.order_event_csv_path = os.path.join(base, "data", "order_event_log.csv")
+        self.ai_model_path = os.path.join(base, "data", AI_MODEL_FILENAME)
 
         # 루프 주기
         self.timer = QTimer()
@@ -1805,11 +2245,66 @@ class TradingEngine:
         self._last_buy_block_reason_at: Dict[str, datetime.datetime] = {}
         self._last_holdings_price_sync_at: Optional[datetime.datetime] = None
         self._last_holdings_price_brief: str = ""
+        self._last_reconcile_issue_sig: str = ""
+        self._last_reconcile_issue_at: Optional[datetime.datetime] = None
+        self._chejan_dedup_keys: set = set()
+        self._chejan_dedup_order: deque = deque(maxlen=600)
 
         # MA 라운드로빈 상태
         self._ma_needed_codes = set(stock_codes)
         self._ma_refresh_idx = 0
         self._next_ma_refresh_at = datetime.datetime.min
+        self._last_global_buy_sent_at: Optional[datetime.datetime] = None
+        self._global_buy_timestamps: deque = deque(maxlen=4000)
+
+    def set_scan_quality_context(
+        self, quality_intent: bool, allowlist: Optional[Set[str]] = None
+    ) -> None:
+        """마지막 배경 스캔 결과: 우량 슬롯이면 시총 허용 집합으로 눌림 규칙을 바인딩."""
+        self._scan_quality_intent_active = bool(quality_intent)
+        self._quality_mcap_allowlist = set(allowlist or ())
+
+    def _use_quality_dip_for_code(self, code: str) -> bool:
+        if not QUALITY_DIP_ENABLED:
+            return False
+        c = str(code).strip()
+        if not self._scan_quality_intent_active or not self._quality_mcap_allowlist:
+            return False
+        return c in self._quality_mcap_allowlist
+
+    def _effective_buy_strategy_id(self, code: str) -> str:
+        if self._use_quality_dip_for_code(code):
+            return STRATEGY_QUALITY_DIP
+        sm = self.strategy_manager
+        return sm.active_strategy_id if sm is not None else STRATEGY_AI
+
+    def scan_quality_ui_tag(self) -> str:
+        if not QUALITY_DIP_ENABLED or not self._scan_quality_intent_active:
+            return ""
+        n = len(self._quality_mcap_allowlist)
+        if n <= 0:
+            return " | 스캔:우량슬롯(시총허용집합 없음→눌림미적용)"
+        return f" | 스캔:우량·눌림({n}종 시총허용)"
+
+    def _prune_global_buy_window(self, now: datetime.datetime) -> None:
+        cutoff = now - datetime.timedelta(seconds=3600)
+        dq = self._global_buy_timestamps
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+    def _effective_max_single_buy_krw(self, code: Optional[str]) -> float:
+        base = max(0.0, float(MAX_SINGLE_BUY_ORDER_KRW))
+        if base <= 0 or not bool(ATR_INVERSE_ORDER_CAP) or not code:
+            return base
+        v = self.ma.get(code) or {}
+        atr_pct = float(v.get("atr_pct", 0.0) or 0.0)
+        if atr_pct <= 0:
+            return base
+        ref = max(1e-9, float(ENTRY_ATR_REF_PCT))
+        factor = ref / max(ref, atr_pct)
+        lo = max(0.0, min(1.0, float(ATR_ORDER_CAP_MIN_FACTOR)))
+        factor = max(lo, min(1.0, factor))
+        return base * factor
 
     def _on_real_price(self, code: str, price: int):
         self.current_price[code] = abs(int(price))
@@ -1886,7 +2381,7 @@ class TradingEngine:
             total += max(0, qty) * max(0.0, px)
         return total
 
-    def _budget_based_order_qty(self, price: float) -> int:
+    def _budget_based_order_qty(self, price: float, code: Optional[str] = None) -> int:
         if price <= 0:
             return 0
         if not bool(BUDGET_BASED_ORDER_QTY):
@@ -1910,7 +2405,7 @@ class TradingEngine:
         per_slot_budget = remaining_budget / float(remaining_slots)
         max_position_budget = total_limit * max(0.01, float(MAX_POSITION_BUDGET_PCT))
         target_budget = max(price, min(per_slot_budget, max_position_budget))
-        max_single_order = max(0.0, float(MAX_SINGLE_BUY_ORDER_KRW))
+        max_single_order = max(0.0, self._effective_max_single_buy_krw(code))
         if max_single_order > 0:
             target_budget = min(target_budget, max_single_order)
         qty = int(target_budget // price)
@@ -2140,6 +2635,48 @@ class TradingEngine:
         base = max(1.0, float(TOTAL_LIMIT_KRW))
         return total / base
 
+    def _today_sell_reason_count(self, reason: str) -> int:
+        tracker = getattr(self, "trade_tracker", None)
+        if tracker is None:
+            return 0
+        today = datetime.date.today()
+        target = str(reason or "").strip()
+        count = 0
+        try:
+            records = list(getattr(tracker, "records", []) or [])
+        except Exception:
+            return 0
+        for r in records:
+            if str(getattr(r, "side", "")).upper() != "SELL":
+                continue
+            ts = getattr(r, "ts", None)
+            sell_reason = str(getattr(r, "sell_reason", "") or "").strip()
+            if isinstance(ts, datetime.datetime) and ts.date() == today and sell_reason == target:
+                count += 1
+        return count
+
+    def _today_sell_stats(self) -> tuple[int, int]:
+        tracker = getattr(self, "trade_tracker", None)
+        if tracker is None:
+            return 0, 0
+        today = datetime.date.today()
+        sells = 0
+        wins = 0
+        try:
+            records = list(getattr(tracker, "records", []) or [])
+        except Exception:
+            return 0, 0
+        for r in records:
+            if str(getattr(r, "side", "")).upper() != "SELL":
+                continue
+            ts = getattr(r, "ts", None)
+            if not (isinstance(ts, datetime.datetime) and ts.date() == today):
+                continue
+            sells += 1
+            if float(getattr(r, "realized_pnl_krw", 0.0) or 0.0) > 0:
+                wins += 1
+        return sells, wins
+
     def _effective_max_positions(self) -> int:
         limit = int(MAX_CONCURRENT_POSITIONS)
         if self._is_market_weak():
@@ -2179,6 +2716,35 @@ class TradingEngine:
         vol_ratio = float(v.get("vol_ratio", 0.0) or 0.0)
         atr_pct = float(v.get("atr_pct", 0.0) or 0.0)
         trade_win, trade_avg, trade_count = self._trade_features_for_code(code)
+
+        dip = self._use_quality_dip_for_code(code)
+        if dip:
+            rel = cur / ma20 - 1.0
+            ma_score = max(-0.5, min(0.55, (-rel) * 3.0))
+            rsi_score = max(-0.45, min(0.55, (float(QDIP_RSI_MAX_ENTRY) + 8.0 - rsi) / 55.0)) + max(
+                -0.15, min(0.25, (rsi - rsi_prev) / 22.0)
+            )
+            vol_score = max(0.0, min(1.1, vol_ratio / 2.5))
+            thr = float(self._dynamic_ai_entry_min_soft())
+            ai_score = 0.0
+            proba_up = self._ai_proba_up(code, cur)
+            if proba_up is not None:
+                ai_score = (float(proba_up) - thr) * 2.0
+            atr_penalty = max(0.0, min(0.85, atr_pct * 11.0))
+            loss_penalty = min(1.0, self._recent_loss_count_for_code(code) * 0.4)
+            return (
+                ma_score
+                + rsi_score
+                + vol_score
+                + ai_score
+                + (trade_win - 0.5)
+                + trade_avg
+                + (trade_count * 0.1)
+                + (self._auto_bt_code_score(code) * float(AUTO_BT_SCORE_WEIGHT))
+                - atr_penalty
+                - loss_penalty
+            )
+
         ma_score = max(-0.5, min(0.5, (cur / ma20 - 1.0))) * 2.0
         rsi_score = max(-0.5, min(0.5, (rsi - 50.0) / 50.0)) + max(-0.2, min(0.2, (rsi - rsi_prev) / 20.0))
         vol_score = max(0.0, min(1.0, vol_ratio / 2.0))
@@ -2382,17 +2948,121 @@ class TradingEngine:
             )
         return None, ""
 
+    def _load_ai_model_from_disk(self) -> bool:
+        path = str(getattr(self, "ai_model_path", "") or "")
+        if not path or not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+            if not isinstance(payload, dict):
+                return False
+            feature_names = list(payload.get("feature_names", []) or [])
+            if feature_names != list(AI_FEATURE_NAMES):
+                self._emit_log("[AI] 저장 모델 무시: feature schema mismatch")
+                return False
+            model = payload.get("model")
+            if model is None or not hasattr(model, "predict_proba"):
+                self._emit_log("[AI] 저장 모델 무시: predict_proba 없음")
+                return False
+            trained_raw = str(payload.get("trained_date", "") or "")
+            trained_date: Optional[datetime.date] = None
+            if trained_raw:
+                try:
+                    trained_date = datetime.date.fromisoformat(trained_raw)
+                except ValueError:
+                    trained_date = None
+            if trained_date is not None:
+                age_days = (datetime.date.today() - trained_date).days
+                if age_days > int(AI_MODEL_MAX_AGE_DAYS):
+                    self._emit_log(
+                        f"[AI] 저장 모델 무시: 오래됨({age_days}일>{int(AI_MODEL_MAX_AGE_DAYS)}일)"
+                    )
+                    return False
+            self.ai_model = model
+            self.ai_trained_date = trained_date
+            self.ai_model_name = str(payload.get("model_name", "unknown") or "unknown")
+            self.ai_model_samples = int(payload.get("samples", 0) or 0)
+            self.ai_model_loaded_from_disk = True
+            self._emit_log(
+                f"[AI] 저장 모델 로드: {self.ai_model_name} "
+                f"samples={self.ai_model_samples} date={trained_raw or '-'}"
+            )
+            return True
+        except Exception as e:
+            self._emit_log(f"[AI] 저장 모델 로드 실패: {e}")
+            return False
+
+    def _save_ai_model_to_disk(
+        self,
+        model: object,
+        model_name: str,
+        samples: int,
+        trained_date: datetime.date,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        path = str(getattr(self, "ai_model_path", "") or "")
+        if not path:
+            return
+        payload: Dict[str, Any] = {
+            "version": 2,
+            "model": model,
+            "model_name": str(model_name or "unknown"),
+            "samples": int(samples),
+            "trained_date": trained_date.isoformat(),
+            "feature_names": list(AI_FEATURE_NAMES),
+            "label_horizon_days": int(AI_LABEL_HORIZON_DAYS),
+            "round_trip_cost_pct": float(AI_ROUND_TRIP_COST_PCT),
+            "slippage_pct": float(AI_SLIPPAGE_PCT),
+        }
+        if isinstance(extra_payload, dict):
+            payload.update(extra_payload)
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            self._emit_log(f"[AI] 모델 저장 완료: {os.path.basename(path)}")
+        except Exception as e:
+            self._emit_log(f"[AI] 모델 저장 실패: {e}")
+
     def train_random_forest(self) -> None:
         model, model_name = self._build_ai_classifier()
         if model is None:
             return
 
+        today = datetime.date.today()
+        self.ai_trained_date = today
         try:
-            today = datetime.date.today()
             end_date = today.strftime("%Y%m%d")
+            aicfg = aos.AiObjectiveConfig(
+                label_horizon_days=int(AI_LABEL_HORIZON_DAYS),
+                atr_period=int(ATR_PERIOD),
+                use_atr_risk=bool(USE_ATR_RISK),
+                stop_loss_pct=float(STOP_LOSS_PCT),
+                take_profit_pct=float(TAKE_PROFIT_PCT),
+                atr_stop_mult=float(ATR_STOP_MULT),
+                atr_take_mult=float(ATR_TAKE_MULT),
+                atr_stop_min_pct=float(ATR_STOP_MIN_PCT),
+                atr_stop_max_pct=float(ATR_STOP_MAX_PCT),
+                atr_take_min_pct=float(ATR_TAKE_MIN_PCT),
+                atr_take_max_pct=float(ATR_TAKE_MAX_PCT),
+                round_trip_cost_pct=float(AI_ROUND_TRIP_COST_PCT),
+                slippage_pct=float(AI_SLIPPAGE_PCT),
+            )
 
-            X_all: List[List[float]] = []
-            y_all: List[int] = []
+            X_train: List[List[float]] = []
+            y_train: List[int] = []
+            X_val: List[List[float]] = []
+            y_val: List[int] = []
+            label_audit_y: List[int] = []
+            label_audit_net: List[float] = []
+
+            use_calib = bool(
+                AI_AVAILABLE and clone is not None and CalibratedClassifierCV is not None
+            )
+            val_frac = float(AI_VAL_FRAC)
+            val_frac = min(0.45, max(0.05, val_frac))
+            min_pc = max(3, int(AI_VAL_MIN_ROWS_PER_CODE))
 
             # 각 종목별로 학습 데이터를 만들고 합칩니다.
             # (학습 시 TR을 여러 번 호출하므로, 가능한 한 종목/샘플 수를 제한)
@@ -2421,6 +3091,10 @@ class TradingEngine:
                 macd_line_series = [a - b for a, b in zip(ema12_series, ema26_series)]
                 macd_signal_series = _ema_series(macd_line_series, 9)
                 trade_f1, trade_f2, trade_f3 = self._trade_features_for_code(code)
+
+                X_code: List[List[float]] = []
+                y_code: List[int] = []
+                net_code: List[float] = []
 
                 # prefix sum으로 MA 합을 빠르게 계산
                 # prefix[i] = sum(closes[:i]) ; sum(l..r)=prefix[r]-prefix[l]
@@ -2480,11 +3154,11 @@ class TradingEngine:
 
                     macd_line = float(macd_line_series[t]) if t < len(macd_line_series) else 0.0
                     macd_signal = float(macd_signal_series[t]) if t < len(macd_signal_series) else 0.0
-                    atr_pct = _compute_atr_pct(
+                    atr_pct = aos.compute_atr_pct(
                         highs_f[: t + 1],
                         lows_f[: t + 1],
                         closes_f[: t + 1],
-                        ATR_PERIOD,
+                        int(ATR_PERIOD),
                     )
 
                     f1 = (ma5 / ma20) - 1.0
@@ -2498,45 +3172,168 @@ class TradingEngine:
                     f9 = float(macd_signal / ma20) if ma20 > 0 else 0.0
                     f10 = float(atr_pct)
 
-                    X_all.append([f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, trade_f1, trade_f2, trade_f3])
+                    X_code.append([f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, trade_f1, trade_f2, trade_f3])
                     entry = float(closes[t])
-                    stop_abs = (
-                        min(float(ATR_STOP_MAX_PCT), max(float(ATR_STOP_MIN_PCT), atr_pct * float(ATR_STOP_MULT)))
-                        if atr_pct > 0
-                        else abs(float(STOP_LOSS_PCT))
+                    exit_price = aos.resolve_exit_price(
+                        closes_f, highs_f, lows_f, t, float(atr_pct), aicfg
                     )
-                    take_abs = (
-                        min(float(ATR_TAKE_MAX_PCT), max(float(ATR_TAKE_MIN_PCT), atr_pct * float(ATR_TAKE_MULT)))
-                        if atr_pct > 0
-                        else abs(float(TAKE_PROFIT_PCT))
-                    )
-                    stop_price = entry * (1.0 - stop_abs)
-                    take_price = entry * (1.0 + take_abs)
-                    exit_price = float(closes[min(len(closes) - 1, t + horizon)])
-                    for j in range(t + 1, min(len(closes), t + horizon + 1)):
-                        if float(lows[j]) <= stop_price:
-                            exit_price = stop_price
-                            break
-                        if float(highs[j]) >= take_price:
-                            exit_price = take_price
-                            break
-                    net_ret = (exit_price / entry - 1.0) - float(AI_ROUND_TRIP_COST_PCT) - float(AI_SLIPPAGE_PCT)
+                    net_ret = aos.net_return_after_costs(entry, exit_price, aicfg)
                     y = 1 if net_ret > float(AI_RET_LABEL_THRESHOLD) else 0
-                    y_all.append(y)
+                    y_code.append(y)
+                    net_code.append(float(net_ret))
 
-            if len(X_all) < AI_MIN_TOTAL_SAMPLES:
+                nloc = len(X_code)
+                if nloc <= 0:
+                    continue
+                label_audit_y.extend(y_code)
+                label_audit_net.extend(net_code)
+                if not use_calib or nloc < min_pc:
+                    X_train.extend(X_code)
+                    y_train.extend(y_code)
+                    continue
+                n_val_pc = max(1, int(round(nloc * val_frac)))
+                n_tr_pc = nloc - n_val_pc
+                if n_tr_pc < 1:
+                    n_tr_pc = nloc - 1
+                    n_val_pc = nloc - n_tr_pc
+                X_train.extend(X_code[:n_tr_pc])
+                y_train.extend(y_code[:n_tr_pc])
+                X_val.extend(X_code[n_tr_pc:])
+                y_val.extend(y_code[n_tr_pc:])
+
+            n_total = len(X_train) + len(X_val)
+            if n_total < AI_MIN_TOTAL_SAMPLES:
                 # 표본이 부족하면 모델 학습 스킵
+                self._emit_log(f"[AI] 학습 스킵: samples={n_total}/{int(AI_MIN_TOTAL_SAMPLES)}")
                 return
 
-            model.fit(X_all, y_all)
-            self.ai_model = model
+            label_report = _ai_label_distribution_report(label_audit_y, label_audit_net)
+            calib_applied = False
+            metrics_report: Dict[str, Any] = {
+                "trained_date": today.isoformat(),
+                "model_name": str(model_name or "unknown"),
+                "label_audit": label_report,
+                "split": {
+                    "n_train": len(X_train),
+                    "n_val": len(X_val),
+                    "val_frac_target": val_frac,
+                    "per_code_split_min_rows": min_pc,
+                },
+            }
+
+            train_merge_min = max(30, int(AI_TRAIN_MERGE_BACK_MIN))
+            cal_min = max(15, int(AI_CALIBRATION_MIN_VAL))
+            biclass_val = len(set(y_val)) >= 2 if y_val else False
+
+            if (
+                use_calib
+                and len(X_val) >= cal_min
+                and biclass_val
+                and len(X_train) >= train_merge_min
+            ):
+                base_m = clone(model)
+                base_m.fit(X_train, y_train)
+                p_raw_v: List[float] = []
+                try:
+                    p_raw_v = [float(p[1]) for p in base_m.predict_proba(X_val)]
+                except Exception:
+                    p_raw_v = []
+                metrics_report["val_metrics_raw"] = _ai_binary_metrics_safe(y_val, p_raw_v)
+
+                cal_method = (
+                    str(AI_CALIBRATION_METHOD).lower()
+                    if str(AI_CALIBRATION_METHOD).lower() in ("sigmoid", "isotonic")
+                    else "sigmoid"
+                )
+                calibrator = CalibratedClassifierCV(estimator=base_m, method=cal_method, cv="prefit")
+                calibrator.fit(X_val, y_val)
+                p_cal_v: List[float] = []
+                try:
+                    p_cal_v = [float(p[1]) for p in calibrator.predict_proba(X_val)]
+                except Exception:
+                    p_cal_v = []
+                metrics_report["val_metrics_calibrated"] = _ai_binary_metrics_safe(y_val, p_cal_v)
+                metrics_report["calibration"] = {"method": cal_method, "cv": "prefit"}
+
+                raw = metrics_report.get("val_metrics_raw") or {}
+                cal = metrics_report.get("val_metrics_calibrated") or {}
+
+                def _fmtm(md: Dict[str, float], k: str) -> str:
+                    v = md.get(k, float("nan"))
+                    try:
+                        x = float(v)
+                        return "nan" if not math.isfinite(x) else f"{x:.4f}"
+                    except Exception:
+                        return "nan"
+
+                self._emit_log(
+                    f"[AI] 시계열 val(n={len(y_val)}) raw: auc={_fmtm(raw, 'auc')} "
+                    f"brier={_fmtm(raw, 'brier')} ece={_fmtm(raw, 'ece')} | "
+                    f"cal({cal_method}): auc={_fmtm(cal, 'auc')} brier={_fmtm(cal, 'brier')} ece={_fmtm(cal, 'ece')}"
+                )
+                self._emit_log(
+                    f"[AI] 라벨 요약 pos_rate={float(label_report.get('pos_rate', 0))*100:.1f}% "
+                    f"n={label_report.get('n_samples','-')} "
+                    f"net_ret_med={label_report.get('net_ret_p50','-')}"
+                )
+
+                final_model = calibrator
+                calib_applied = True
+                imps_src = base_m
+
+                metrics_path = os.path.join(
+                    os.path.dirname(str(self.ai_model_path)) or ".",
+                    str(AI_METRICS_JSON_BASENAME),
+                )
+                _ai_write_calibration_json(metrics_path, metrics_report)
+            else:
+                if use_calib and len(X_val) > 0:
+                    self._emit_log(
+                        f"[AI] 검증분할·교정 생략→전량 학습 "
+                        f"(n_tr={len(X_train)}, n_val={len(X_val)}, biclass_val={biclass_val}, "
+                        f"need_tr>={train_merge_min} need_val>={cal_min})"
+                    )
+                Xm = X_train + X_val
+                ym = y_train + y_val
+                fitted = clone(model)
+                fitted.fit(Xm, ym)
+                final_model = fitted
+                imps_src = fitted
+                metrics_report["fit_mode"] = "full_pool_no_calibration"
+                self._emit_log(
+                    f"[AI] 라벨 요약 pos_rate={(sum(ym)/max(1,len(ym))*100):.1f}% n={len(ym)}"
+                )
+
+                metrics_path = os.path.join(
+                    os.path.dirname(str(self.ai_model_path)) or ".",
+                    str(AI_METRICS_JSON_BASENAME),
+                )
+                _ai_write_calibration_json(metrics_path, metrics_report)
+
+            self.ai_model = final_model
             self.ai_trained_date = today
+            self.ai_model_name = str(model_name or "unknown")
+            self.ai_model_samples = int(n_total)
+            self.ai_model_loaded_from_disk = False
+            self._save_ai_model_to_disk(
+                final_model,
+                model_name,
+                int(n_total),
+                today,
+                extra_payload={
+                    "calibration_applied": calib_applied,
+                    "sklearn_calibration_method": str(AI_CALIBRATION_METHOD).lower()
+                    if calib_applied
+                    else "",
+                },
+            )
             self._emit_log(
-                f"[AI] 학습 완료: {model_name} samples={len(X_all)} "
-                f"label=익절/손절 {int(AI_LABEL_HORIZON_DAYS)}일, 비용반영"
+                f"[AI] 학습 완료: {model_name} samples={int(n_total)} "
+                f"label=비용반영 스탑/익절 {int(AI_LABEL_HORIZON_DAYS)}일 "
+                f"calibrated={'yes' if calib_applied else 'no'}"
             )
             try:
-                imps = list(getattr(model, "feature_importances_", []))
+                imps = list(getattr(imps_src, "feature_importances_", []))
                 if imps:
                     pairs = list(zip(AI_FEATURE_NAMES, imps))
                     pairs.sort(key=lambda x: float(x[1]), reverse=True)
@@ -2544,9 +3341,20 @@ class TradingEngine:
                     self._emit_log(f"[AI] feature importance top5 -> {top}")
             except Exception:
                 pass
-        except Exception:
+        except Exception as e:
             # 학습 실패 시 전략은 기술적 필터만 사용
+            self._emit_log(f"[AI] 학습 중 예외로 중단(메트릭 JSON·모델 저장 생략 가능): {e}")
+            self.ai_trained_date = today
             return
+
+    def ai_status_line(self) -> str:
+        if self.ai_model is None:
+            if self.ai_trained_date == datetime.date.today():
+                return "AI:학습실패/샘플부족"
+            return "AI:미학습"
+        src = "로드" if bool(self.ai_model_loaded_from_disk) else "학습"
+        date_txt = self.ai_trained_date.isoformat() if self.ai_trained_date else "-"
+        return f"AI:{src} {self.ai_model_name or '-'} n={int(self.ai_model_samples)} {date_txt}"
 
     def _maybe_reset_daily_state(self, today: datetime.date) -> None:
         if self._last_ma_refresh_date == today:
@@ -2651,6 +3459,7 @@ class TradingEngine:
                         self.pending_buy.setdefault(c, False)
                         self.pending_sell.setdefault(c, False)
                         self.tp_reached.setdefault(c, False)
+                self._reconcile_holdings_with_trade_log()
             else:
                 data = {}
             # 비밀번호 미설정/조회 실패로 빈 응답이 오는 경우를 진단 로그로 남김(과다 방지: 5분 1회)
@@ -2678,6 +3487,121 @@ class TradingEngine:
             if should_warn:
                 self._emit_log(f"[HOLDINGS] 잔고조회 오류: {e}")
                 self._last_positions_sync_warn_at = now
+        finally:
+            self._maybe_refresh_opw_eval_snapshot(password=str(password or ""))
+
+    def _maybe_refresh_opw_eval_snapshot(self, password: str = "") -> None:
+        """
+        opw00004 계좌평가현황(TR)으로 당일/누적 투자손익 등을 채운다.
+        잔고 TR 실패 여부와 무관히 주기 호출 가능(약 120s 간격).
+        """
+        now = datetime.datetime.now()
+        interval = 120.0
+        la = getattr(self, "opw_eval_fetched_at", None)
+        if la is not None and (now - la).total_seconds() < interval:
+            return
+        kw = getattr(self, "kiwoom", None)
+        fn = getattr(kw, "request_account_eval_summary", None) if kw is not None else None
+        if not callable(fn):
+            return
+        try:
+            res = fn(self.account, password=str(password or ""))
+        except Exception:
+            return
+        if not isinstance(res, dict) or not res:
+            return
+        self.opw_eval_fetched_at = now
+        if "당일투자손익" in res:
+            self.opw_daily_invest_pnl_krw = int(res["당일투자손익"])
+        if "당월투자손익" in res:
+            self.opw_month_invest_pnl_krw = int(res["당월투자손익"])
+        if "누적투자손익" in res:
+            self.opw_accum_invest_profit_loss_krw = int(res["누적투자손익"])
+        # 싱글필드 "손익금액"은 종목별 합 평가손익에 가까운 계열(증광 표기와 명칭이 다를 수 있음)
+        if "손익금액" in res:
+            self.opw_holdings_eval_pnl_krw = int(res["손익금액"])
+
+    def _reconcile_holdings_with_trade_log(self) -> None:
+        """opw00018 잔고(self.positions)와 TradeTracker CSV(FIFO 재구성) 불일치를 검사한다."""
+        tracker = getattr(self, "trade_tracker", None)
+        if tracker is None:
+            return
+        try:
+            recs = tracker.all_records()
+            ledger_map, oversell = fifo_open_positions_from_records(recs)
+        except Exception:
+            return
+
+        broker: Dict[str, Dict[str, int]] = {}
+        for c, p in (self.positions or {}).items():
+            q = int((p or {}).get("qty", 0) or 0)
+            if q <= 0:
+                continue
+            broker[str(c)] = {
+                "qty": q,
+                "avg_price": int((p or {}).get("avg_price", 0) or 0),
+            }
+
+        issues: List[str] = []
+        for c in sorted(oversell.keys()):
+            ov = int(oversell.get(c, 0) or 0)
+            if ov > 0:
+                issues.append(f"{c}:CSV매도과다 qty={ov}")
+
+        all_codes = sorted(set(broker.keys()) | set(ledger_map.keys()))
+        tol_rel = float(RECONCILE_AVG_REL_TOL)
+        tol_abs = float(RECONCILE_AVG_ABS_MIN_KRW)
+
+        for code in all_codes:
+            b = broker.get(code)
+            lg = ledger_map.get(code)
+            bq = int(b["qty"]) if b else 0
+            lq_float = float((lg or {}).get("qty", 0.0)) if lg else 0.0
+            lq = int(round(lq_float))
+            if bq != lq:
+                issues.append(f"{code}:qty broker={bq} ledger={lq}")
+                continue
+            if bq > 0 and b is not None and lg is not None:
+                bp = int(b.get("avg_price", 0) or 0)
+                lp = float(lg.get("avg_price", 0.0) or 0.0)
+                if bp > 0 and lp > 0:
+                    diff = abs(float(bp) - lp)
+                    if diff >= tol_abs and (diff / max(float(bp), 1.0)) > tol_rel:
+                        issues.append(
+                            f"{code}:avg broker={bp} ledger={lp:.1f}",
+                        )
+
+        if not issues:
+            prev_sig = self._last_reconcile_issue_sig
+            self._last_reconcile_issue_sig = ""
+            self._last_reconcile_issue_at = None
+            if prev_sig:
+                self._emit_log("[RECONCILE] 불일치 해소 — 현재 잔고·거래CSV 일치")
+            return
+
+        sig = "|".join(issues)
+        now = datetime.datetime.now()
+        last_at = self._last_reconcile_issue_at
+        if (
+            sig == self._last_reconcile_issue_sig
+            and last_at is not None
+            and (now - last_at).total_seconds() < float(RECONCILE_ISSUE_COOLDOWN_SEC)
+        ):
+            return
+        self._last_reconcile_issue_sig = sig
+        self._last_reconcile_issue_at = now
+        preview = "; ".join(issues[:12])
+        extra = "" if len(issues) <= 12 else f" 외 {len(issues)-12}건"
+        msg = f"[RECONCILE] 잔고≠CSV ({preview}{extra})"
+        self._emit_log(msg)
+        self._append_order_event(
+            event="RECONCILE_MISMATCH",
+            code="",
+            side="",
+            qty=0,
+            price=0.0,
+            note=msg[:1600],
+        )
 
     def _sync_holding_current_prices(self, interval_sec: float = 10.0) -> None:
         """보유 종목 현재가는 yfinance/전일종가 대신 키움 현재가 TR로 주기 보정."""
@@ -2734,6 +3658,22 @@ class TradingEngine:
         if today_loss_pct <= float(DAILY_LOSS_HARD_LIMIT_PCT):
             self._log_buy_block(code, f"당일 손실한도 초과({today_loss_pct*100:.2f}%)")
             return False
+        ai_loss_exits = self._today_sell_reason_count("ai_loss_exit")
+        if ai_loss_exits >= int(DAILY_AI_LOSS_EXIT_BLOCK_COUNT):
+            self._log_buy_block(
+                code,
+                f"당일 AI 손실청산 반복({ai_loss_exits}/{int(DAILY_AI_LOSS_EXIT_BLOCK_COUNT)})",
+            )
+            return False
+        today_sells, today_wins = self._today_sell_stats()
+        if today_sells >= int(DAILY_WIN_RATE_BLOCK_MIN_SELLS):
+            today_win_rate = today_wins / float(max(1, today_sells))
+            if today_win_rate < float(DAILY_WIN_RATE_BLOCK_PCT):
+                self._log_buy_block(
+                    code,
+                    f"당일 승률 저조({today_wins}/{today_sells}, {today_win_rate*100:.1f}%)",
+                )
+                return False
         bt_mode = self._auto_bt_mode()
         if bool(AUTO_BT_BLOCK_BUY) and bt_mode == "block":
             self._log_buy_block(code, "자동백테스트 게이트 차단")
@@ -2762,6 +3702,14 @@ class TradingEngine:
         if not self.ma.get(code):
             self._log_buy_block(code, "MA 데이터 없음")
             return False
+        if bool(USE_ENTRY_ATR_GATE) and float(ENTRY_ATR_MAX_PCT) > 0:
+            atr_pct = float((self.ma.get(code) or {}).get("atr_pct", 0.0) or 0.0)
+            if atr_pct > float(ENTRY_ATR_MAX_PCT):
+                self._log_buy_block(
+                    code,
+                    f"진입 ATR 상한 초과({atr_pct * 100.0:.2f}%>{float(ENTRY_ATR_MAX_PCT) * 100.0:.2f}%)",
+                )
+                return False
         active_positions = sum(1 for _c, p in self.positions.items() if p.get("qty", 0) > 0)
         effective_limit = self._effective_max_positions()
         if active_positions >= effective_limit:
@@ -2774,7 +3722,8 @@ class TradingEngine:
 
     def _ai_buy_filter(self, code: str, cur: float) -> bool:
         if self.ai_model is None:
-            return True
+            self._log_buy_block(code, "AI 모델 미학습", interval_sec=120.0)
+            return False
         x = self._ai_features_from_cached(code, cur)
         if x is None:
             return False
@@ -2783,6 +3732,32 @@ class TradingEngine:
             return proba_up >= self._dynamic_ai_entry_min()
         except Exception:
             return False
+
+    def _dynamic_ai_entry_min_soft(self) -> float:
+        base = float(self._dynamic_ai_entry_min()) + float(AI_TECH_STRATEGY_ENTRY_DELTA)
+        floor = float(AI_TECH_STRATEGY_ENTRY_FLOOR)
+        if floor > 0.0:
+            return max(floor, base)
+        return max(0.0, min(0.95, base))
+
+    def _ai_buy_filter_soft(self, code: str, cur: float) -> bool:
+        """
+        트렌드/거량 전용: 진입 분류기를 AI 전략보다 낮은 문턱으로만 적용.
+        모델이 없거나 특성 미구성 시 기술적 조건만으로 진행(True).
+        """
+        if not bool(AI_SOFT_FILTER_TECH_STRATEGIES):
+            return True
+        if self.ai_model is None:
+            return True
+        x = self._ai_features_from_cached(code, cur)
+        if x is None:
+            return True
+        try:
+            proba_up = float(self.ai_model.predict_proba([x])[0][1])
+            thr = float(self._dynamic_ai_entry_min_soft())
+            return proba_up >= thr
+        except Exception:
+            return True
 
     def _should_buy_for_strategy(
         self, code: str, v: Dict[str, float], cur: float, strategy_id: str
@@ -2805,6 +3780,29 @@ class TradingEngine:
             )
             return False
 
+        # 시총상위 스캔 슬롯 + 허용종목: 추세형 MA20 게이트 대신 눌림 블록만 적용
+        if strategy_id == STRATEGY_QUALITY_DIP:
+            if ma20 <= 0:
+                return fail("(눌림) MA20 없음")
+            rel = cur / ma20 - 1.0
+            if rel > float(QDIP_MAX_PRICE_ABOVE_MA20_PCT):
+                return fail("(눌림) MA20 대비 과열·추격")
+            if rel < float(QDIP_MIN_PRICE_VS_MA20_PCT):
+                return fail("(눌림) MA20 대비 과도 하락")
+            if rsi14 > float(QDIP_RSI_MAX_ENTRY) or rsi14 < float(QDIP_RSI_MIN_ENTRY):
+                return fail("(눌림) RSI 구간 불가")
+            if rsi14 < rsi14_prev - float(QDIP_RSI_DROP_MAX_TOLERANCE):
+                return fail("(눌림) RSI 급하락")
+            if vol_ratio < float(QDIP_VOL_RATIO_MIN):
+                return fail("(눌림) 거래량 평균비 부족")
+            if vol_prev > 0 and vol_today < int(vol_prev * float(QDIP_VOL_DAY_GROWTH_MIN)):
+                return fail("(눌림) 전일대비 거래량 부족")
+            if bool(QDIP_REQUIRE_MA5_GT_MA20) and not (ma5 > ma20):
+                return fail("(눌림) MA5<=MA20")
+            if not self._ai_buy_filter_soft(code, cur):
+                return fail(f"(눌림) AI 확률 부족(thr={self._dynamic_ai_entry_min_soft():.2f})")
+            return True
+
         if cur < ma20 * (1.0 + MA20_ENTRY_GAP_PCT):
             return fail("MA20 대비 너무 낮음")
         price_to_ma20 = cur / ma20 - 1.0 if ma20 > 0 else 0.0
@@ -2826,6 +3824,8 @@ class TradingEngine:
             g_min = max(VOL_ENTRY_GROWTH_MIN, 0.96)
             if vol_prev > 0 and vol_today < int(vol_prev * g_min):
                 return fail("전일대비 거래량 부족")
+            if not self._ai_buy_filter_soft(code, cur):
+                return fail(f"AI 상승확률 부족(거량·완화 thr={self._dynamic_ai_entry_min_soft():.2f})")
             return True
 
         if strategy_id == STRATEGY_TREND:
@@ -2841,6 +3841,8 @@ class TradingEngine:
                 return fail("거래량 평균비 부족")
             if vol_prev > 0 and vol_today < int(vol_prev * (VOL_ENTRY_GROWTH_MIN * 0.95)):
                 return fail("전일대비 거래량 부족")
+            if not self._ai_buy_filter_soft(code, cur):
+                return fail(f"AI 상승확률 부족(트렌드·완화 thr={self._dynamic_ai_entry_min_soft():.2f})")
             return True
 
         # STRATEGY_AI: 상승추세·RSI·거래량·RF 확률
@@ -2865,8 +3867,7 @@ class TradingEngine:
             return False
         v = self.ma[code]
         cur = float(self.current_price[code])
-        sm = self.strategy_manager
-        sid = sm.active_strategy_id if sm is not None else STRATEGY_AI
+        sid = self._effective_buy_strategy_id(code)
         ok = self._should_buy_for_strategy(code, v, cur, sid)
         return ok
 
@@ -2921,10 +3922,10 @@ class TradingEngine:
             if not self.tp_reached.get(code, False):
                 if cur >= take_price:
                     self.tp_reached[code] = True
-                    # 아직 팔지 않고, 이후 하락 시 트레일링 스탑으로 정리
+                    # 2주 이상이면 일부 익절 후 잔여분만 트레일링, 1주는 목표가에서 즉시 실현.
                     if bool(PARTIAL_TAKE_PROFIT_ENABLED) and int(pos.get("qty", 0) or 0) > 1:
                         return "partial_take_profit"
-                    return ""
+                    return "take_profit"
                 return ""
 
             # tp_reached 이후: 최소 이익(TRAIL_LOCK_PCT) 또는 MA20 중 더 보수적인 가격으로 방어
@@ -2996,7 +3997,29 @@ class TradingEngine:
                 note="current_price missing",
             )
             return
-        qty = int(qty_override) if qty_override is not None else self._budget_based_order_qty(float(cur))
+        now = datetime.datetime.now()
+        min_gap = float(MIN_SEC_BETWEEN_ANY_BUYS)
+        if min_gap > 0.0 and self._last_global_buy_sent_at is not None:
+            elapsed = (now - self._last_global_buy_sent_at).total_seconds()
+            if elapsed < min_gap:
+                self.pending_buy[code] = False
+                self._log_buy_block(
+                    code,
+                    f"전역 매수 간격({elapsed:.1f}s<{min_gap:.0f}s)",
+                    interval_sec=30.0,
+                )
+                return
+        self._prune_global_buy_window(now)
+        hour_cap = int(MAX_NEW_BUYS_PER_HOUR)
+        if hour_cap > 0 and len(self._global_buy_timestamps) >= hour_cap:
+            self.pending_buy[code] = False
+            self._log_buy_block(
+                code,
+                f"시간당 매수 주문 한도({len(self._global_buy_timestamps)}/{hour_cap})",
+                interval_sec=60.0,
+            )
+            return
+        qty = int(qty_override) if qty_override is not None else self._budget_based_order_qty(float(cur), code)
         if qty <= 0:
             self.pending_buy[code] = False
             remaining = max(
@@ -3016,7 +4039,7 @@ class TradingEngine:
             self._emit_log(f"[BUY-BLOCK] {code} 예산 부족 remaining={int(remaining):,} price={int(cur):,}")
             return
         order_value = float(cur) * float(qty)
-        max_single_order = max(0.0, float(MAX_SINGLE_BUY_ORDER_KRW))
+        max_single_order = max(0.0, self._effective_max_single_buy_krw(code))
         if max_single_order > 0 and order_value > max_single_order:
             capped_qty = int(max_single_order // float(cur))
             if capped_qty <= 0:
@@ -3044,12 +4067,18 @@ class TradingEngine:
             qty = int(capped_qty)
 
         prev_qty_before = int((self.positions.get(code) or {}).get("qty", 0))
+        sent_at = datetime.datetime.now()
         self.kiwoom.send_order_market(self.account, code, qty, ORDER_TYPE_BUY)
+        self._last_global_buy_sent_at = sent_at
+        self._global_buy_timestamps.append(sent_at)
+        self._prune_global_buy_window(sent_at)
         self.pending_orders[code] = {
             "side": "buy",
             "qty": qty,
             "prev_qty": prev_qty_before,
-            "sent_at": datetime.datetime.now(),
+            "sent_at": sent_at,
+            "fills_notified_qty": 0,
+            "order_px_ref": float(cur),
         }
         self._append_order_event(
             event="ORDER_SENT",
@@ -3086,6 +4115,8 @@ class TradingEngine:
             "prev_avg_price": prev_avg,
             "reason": str(reason or ""),
             "sent_at": datetime.datetime.now(),
+            "fills_notified_qty": 0,
+            "order_px_ref": float(self.current_price.get(code, 0) or prev_avg or 0),
         }
         self._append_order_event(
             event="ORDER_SENT",
@@ -3096,6 +4127,203 @@ class TradingEngine:
             note=f"reason={reason}" if reason else "",
         )
         self._emit_log(f"[SELL-ORDER] {code} qty={qty} reason={reason or '-'}")
+
+    def _chejan_dedup_seen(self, key: str) -> bool:
+        """동일 체결 이벤트 중복 처리 방지."""
+        if key in self._chejan_dedup_keys:
+            return True
+        self._chejan_dedup_keys.add(key)
+        self._chejan_dedup_order.append(key)
+        while len(self._chejan_dedup_order) > 550:
+            old = self._chejan_dedup_order.popleft()
+            self._chejan_dedup_keys.discard(old)
+        return False
+
+    def _on_kiwoom_chejan(self, fields: Dict[str, str]) -> None:
+        """주문체결 통보(FID 참고: 키움 개발가이드 8.19 주문체결)."""
+        if str(fields.get("gubun", "")).strip() != "0":
+            return
+        ca = _normalize_kiwoom_account_for_match(str(fields.get("9201", "")))
+        ea = _normalize_kiwoom_account_for_match(str(self.account))
+        if not ca or ca != ea:
+            return
+        code = _parse_chejan_code9001(fields.get("9001", ""))
+        if len(code) != 6 or not code.isdigit():
+            return
+        status = str(fields.get("913", "") or "").strip()
+        if "체결" not in status:
+            return
+        ord_no = str(fields.get("9203", "") or "").strip()
+
+        def _parse_qty_fid(fid: str) -> int:
+            try:
+                raw_q = str(fields.get(fid, "") or "0").strip().replace(",", "")
+                return abs(int(float(raw_q or 0)))
+            except (ValueError, TypeError):
+                return 0
+
+        q915 = _parse_qty_fid("915")
+        q911 = _parse_qty_fid("911")
+        meta_prev = self.pending_orders.get(code)
+        fill_qty = 0
+        if q915 > 0:
+            fill_qty = q915
+        elif q911 > 0:
+            prev911 = int((meta_prev or {}).get("last_chejan_911_cum", 0) or 0)
+            if prev911 > 0 and q911 >= prev911:
+                fill_qty = q911 - prev911
+            else:
+                fill_qty = q911
+        if fill_qty <= 0:
+            return
+        try:
+            fill_price = abs(
+                int(float(str(fields.get("910", "") or "0").strip().replace(",", "") or 0))
+            )
+        except (ValueError, TypeError):
+            fill_price = 0
+        if fill_price <= 0:
+            return
+
+        side907 = str(fields.get("907", "") or "").strip()
+        if side907 == "1":
+            side = "SELL"
+        elif side907 == "2":
+            side = "BUY"
+        else:
+            g905 = str(fields.get("905", "") or "").strip()
+            if "매도" in g905:
+                side = "SELL"
+            elif "매수" in g905:
+                side = "BUY"
+            else:
+                return
+
+        exec_id = (
+            str(fields.get("909", "") or "").strip()
+            or str(fields.get("908", "") or "").strip()
+        )
+        dedup_key = f"{ord_no}|{exec_id}|{side}|{fill_qty}|{fill_price}"
+        if self._chejan_dedup_seen(dedup_key):
+            return
+        now_ts = datetime.datetime.now()
+        self._apply_kiwoom_chejan_fill(
+            code=code,
+            side=side,
+            fill_qty=fill_qty,
+            fill_price=fill_price,
+            order_no=ord_no or "-",
+            now_ts=now_ts,
+            chejan_911_snapshot=q911 if q911 > 0 else None,
+        )
+
+    def _apply_kiwoom_chejan_fill(
+        self,
+        code: str,
+        side: str,
+        fill_qty: int,
+        fill_price: int,
+        order_no: str,
+        now_ts: datetime.datetime,
+        chejan_911_snapshot: Optional[int] = None,
+    ) -> None:
+        meta = self.pending_orders.get(code)
+        if meta is None:
+            return
+        pend = str(meta.get("side", "")).strip().lower()
+        if side == "BUY" and pend != "buy":
+            return
+        if side == "SELL" and pend != "sell":
+            return
+
+        ord_qty = int(meta.get("qty", 0) or 0)
+        already = int(meta.get("fills_notified_qty", 0) or 0)
+        room = max(0, ord_qty - already)
+        use_qty = min(int(fill_qty), room) if ord_qty > 0 else int(fill_qty)
+        if use_qty <= 0:
+            return
+
+        if chejan_911_snapshot is not None and int(chejan_911_snapshot) > 0:
+            meta["last_chejan_911_cum"] = int(chejan_911_snapshot)
+
+        px = float(int(fill_price))
+        note_suffix = f"chejan ord={order_no}"
+
+        if side == "BUY":
+            self.pending_buy[code] = False
+            if already == 0:
+                self.last_buy_date[code] = datetime.date.today()
+                self.entry_time[code] = now_ts
+                self.tp_reached[code] = False
+            avg_price_int = int(round(px))
+            if avg_price_int > 0:
+                self._append_order_event(
+                    event="ORDER_FILLED",
+                    code=code,
+                    side="BUY",
+                    qty=int(use_qty),
+                    price=float(avg_price_int),
+                    note=note_suffix,
+                )
+                self._notify_trade_fill(
+                    {
+                        "side": "BUY",
+                        "code": code,
+                        "price": float(avg_price_int),
+                        "qty": int(use_qty),
+                        "ts": now_ts,
+                    }
+                )
+            meta["fills_notified_qty"] = already + use_qty
+            if int(meta["fills_notified_qty"]) >= ord_qty:
+                self.pending_orders.pop(code, None)
+            self._emit_log(
+                f"[CHEJAN-FILL] BUY {code} qty={use_qty} px={avg_price_int} cum={meta['fills_notified_qty']}/{ord_qty}"
+            )
+
+        elif side == "SELL":
+            prev_avg = int(meta.get("prev_avg_price", 0) or 0)
+            if prev_avg <= 0:
+                return
+            sell_reason = str(meta.get("reason", "") or "")
+            self.pending_sell[code] = False
+            sell_price_f = px
+            realized = (sell_price_f - float(prev_avg)) * float(use_qty)
+            self.realized_pnl_krw += float(realized)
+            pnl_pct = (sell_price_f - float(prev_avg)) / float(prev_avg) * 100.0
+            if sell_reason in ("stop_loss", "ai_loss_exit"):
+                self.buy_cooldown_until[code] = now_ts + datetime.timedelta(
+                    seconds=float(STOP_LOSS_REENTRY_COOLDOWN_SEC)
+                )
+            self._append_order_event(
+                event="ORDER_FILLED",
+                code=code,
+                side="SELL",
+                qty=int(use_qty),
+                price=float(sell_price_f),
+                note=(
+                    (f"{note_suffix} reason={sell_reason}") if sell_reason else note_suffix
+                ),
+            )
+            self._notify_trade_fill(
+                {
+                    "side": "SELL",
+                    "code": code,
+                    "price": sell_price_f,
+                    "qty": int(use_qty),
+                    "pnl_pct": float(pnl_pct),
+                    "realized_pnl_krw": float(realized),
+                    "sell_reason": sell_reason,
+                    "ts": now_ts,
+                }
+            )
+            meta["fills_notified_qty"] = already + use_qty
+            if int(meta["fills_notified_qty"]) >= ord_qty:
+                self.pending_orders.pop(code, None)
+            self._emit_log(
+                f"[CHEJAN-FILL] SELL {code} qty={use_qty} px={int(round(px))} "
+                f"cum={meta['fills_notified_qty']}/{ord_qty}"
+            )
 
     def _reconcile_orders_and_portfolio(self) -> None:
         """
@@ -3122,30 +4350,38 @@ class TradingEngine:
                 prev_qty_before = int(meta.get("prev_qty", 0) or 0)
                 filled_qty = max(0, cur_qty - prev_qty_before)
                 if filled_qty > 0:
+                    already = int(meta.get("fills_notified_qty", 0) or 0)
+                    to_notify = max(0, filled_qty - already)
                     self.pending_buy[code] = False
-                    self.last_buy_date[code] = datetime.date.today()
-                    self.entry_time[code] = datetime.datetime.now()
-                    self.tp_reached[code] = False
+                    if to_notify > 0 and already == 0:
+                        self.last_buy_date[code] = datetime.date.today()
+                        self.entry_time[code] = datetime.datetime.now()
+                        self.tp_reached[code] = False
                     avg_price = int(pos.get("avg_price", 0) or 0)
-                    if avg_price > 0:
+                    if avg_price > 0 and to_notify > 0:
                         self._append_order_event(
                             event="ORDER_FILLED",
                             code=code,
                             side="BUY",
-                            qty=int(filled_qty),
+                            qty=int(to_notify),
                             price=float(avg_price),
+                            note="tr_holdings_avg",
                         )
                         self._notify_trade_fill(
                             {
                                 "side": "BUY",
                                 "code": code,
                                 "price": float(avg_price),
-                                "qty": int(filled_qty),
+                                "qty": int(to_notify),
                                 "ts": datetime.datetime.now(),
                             }
                         )
-                    to_clear.append(code)
-                    self._emit_log(f"[FILLED-BUY] {code} qty={filled_qty} total={cur_qty}")
+                    meta["fills_notified_qty"] = filled_qty
+                    if filled_qty >= ord_qty:
+                        to_clear.append(code)
+                    self._emit_log(
+                        f"[FILLED-BUY] {code} broker={filled_qty} tr_slice={to_notify} total_pos={cur_qty}"
+                    )
                 elif elapsed > 25:
                     if not bool(meta.get("timeout_logged", False)):
                         meta["timeout_logged"] = True
@@ -3186,19 +4422,44 @@ class TradingEngine:
                 if cur_qty < prev_qty:
                     self.pending_sell[code] = False
                     sold_qty = prev_qty - cur_qty
+                    already = int(meta.get("fills_notified_qty", 0) or 0)
+                    to_notify = max(0, sold_qty - already)
                     prev_avg = int(meta.get("prev_avg_price", 0) or 0)
                     sell_reason = str(meta.get("reason", "") or "")
-                    sell_price = float(self.current_price.get(code) or prev_avg)
-                    if sold_qty > 0 and prev_avg > 0:
+                    ref = float(meta.get("order_px_ref", 0) or 0)
+                    curp = float(self.current_price.get(code) or 0)
+                    if ref > 0 and curp > 0:
+                        sell_price = (ref + curp) / 2.0
+                    else:
+                        sell_price = float(curp or prev_avg)
+                    if sold_qty >= ord_qty and int(sold_qty) != int(ord_qty):
+                        mismatch_note = (
+                            f"ordered={int(ord_qty)} filled_est={int(sold_qty)} "
+                            f"prev={int(prev_qty)} cur={int(cur_qty)}"
+                        )
                         self._append_order_event(
-                            event="ORDER_FILLED",
+                            event="ORDER_FILL_QTY_MISMATCH",
                             code=code,
                             side="SELL",
                             qty=int(sold_qty),
                             price=float(sell_price),
-                            note=f"reason={sell_reason}" if sell_reason else "",
+                            note=mismatch_note,
                         )
-                        realized = (sell_price - float(prev_avg)) * float(sold_qty)
+                        self._emit_log(f"[WARN] sell fill qty mismatch {code} {mismatch_note}")
+                    if to_notify > 0 and prev_avg > 0:
+                        self._append_order_event(
+                            event="ORDER_FILLED",
+                            code=code,
+                            side="SELL",
+                            qty=int(to_notify),
+                            price=float(sell_price),
+                            note=(
+                                (f"tr_mid_px reason={sell_reason}")
+                                if sell_reason
+                                else "tr_mid_px"
+                            ),
+                        )
+                        realized = (sell_price - float(prev_avg)) * float(to_notify)
                         self.realized_pnl_krw += float(realized)
                         pnl_pct = (sell_price - float(prev_avg)) / float(prev_avg) * 100.0
                         if sell_reason in ("stop_loss", "ai_loss_exit"):
@@ -3210,18 +4471,22 @@ class TradingEngine:
                                 "side": "SELL",
                                 "code": code,
                                 "price": sell_price,
-                                "qty": int(sold_qty),
+                                "qty": int(to_notify),
                                 "pnl_pct": float(pnl_pct),
                                 "realized_pnl_krw": float(realized),
                                 "sell_reason": sell_reason,
                                 "ts": datetime.datetime.now(),
                             }
                         )
+                    meta["fills_notified_qty"] = sold_qty
                     if cur_qty <= 0:
                         self.tp_reached[code] = False
                         self._scale_in_done[code] = False
-                    to_clear.append(code)
-                    self._emit_log(f"[FILLED-SELL] {code} qty={sold_qty} reason={sell_reason or '-'}")
+                    if sold_qty >= ord_qty:
+                        to_clear.append(code)
+                    self._emit_log(
+                        f"[FILLED-SELL] {code} sold={sold_qty} tr_slice={to_notify} reason={sell_reason or '-'}"
+                    )
                 elif elapsed > 25:
                     self.pending_sell[code] = False
                     to_clear.append(code)
@@ -3333,6 +4598,9 @@ class TradingEngine:
 
     def start(self, account_password: str = ""):
         self._account_password = account_password
+        self.kiwoom.on_chejan_data = self._on_kiwoom_chejan
+        if AI_AVAILABLE and self.ai_model is None:
+            self._load_ai_model_from_disk()
         # 시작 시 잔고만 동기화( MA는 라운드로빈으로 점진 갱신 )
         self.sync_portfolio(password=account_password)
         today = datetime.date.today()
@@ -3414,7 +4682,7 @@ def attach_trade_logging(engine: TradingEngine, tracker: TradeTracker) -> None:
 
 
 class TradingWindow(QMainWindow):
-    scan_finished = pyqtSignal(list)
+    scan_finished = pyqtSignal(list, bool)
     scan_message = pyqtSignal(str)
     log_message = pyqtSignal(str)
     _prefetch_ui_tick = pyqtSignal()
@@ -3471,7 +4739,8 @@ class TradingWindow(QMainWindow):
         self.lbl_server = QLabel("서버상태: -")
         self.lbl_account = QLabel("계좌번호: -")
         self.lbl_limit = QLabel(f"총한도액: {int(TOTAL_LIMIT_KRW):,}원")
-        self.lbl_total_pnl = QLabel("누적손익금액: 0원")
+        self.lbl_total_pnl = QLabel("앱·CSV 실현+평가 추정: 0원")
+        self.lbl_opw_pnl = QLabel("키움 opw00004: —")
         self.lbl_total_ret = QLabel("누적수익률: 0.00%")
         self.lbl_est_asset = QLabel(f"추정예탁자산: {int(TOTAL_LIMIT_KRW):,}원")
         for w in (
@@ -3553,7 +4822,7 @@ class TradingWindow(QMainWindow):
         row2.addWidget(self.btn_stop)
 
         row_mid = QHBoxLayout()
-        for w in (self.lbl_total_pnl, self.lbl_total_ret, self.lbl_est_asset):
+        for w in (self.lbl_total_pnl, self.lbl_opw_pnl, self.lbl_total_ret, self.lbl_est_asset):
             w.setStyleSheet("background:#ffffff; border:1px solid #dce3ef; border-radius:6px; padding:4px 8px;")
             row_mid.addWidget(w)
         row_mid.addStretch(1)
@@ -3616,7 +4885,7 @@ class TradingWindow(QMainWindow):
         self.tbl_waiting.setMinimumHeight(360)
         self.tbl_orders = QTableWidget(0, 7)
         self.tbl_orders.setHorizontalHeaderLabels(
-            ["종목", "매수가", "체결가", "주문상태", "수익", "수량/잔량", "비고"]
+            ["종목", "매수가", "체결가", "주문상태", "수익", "체결/잔량", "비고"]
         )
         self.tbl_orders.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.tbl_orders.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
@@ -3722,7 +4991,7 @@ class TradingWindow(QMainWindow):
         )
         self.tbl_overseas_orders = QTableWidget(0, 7)
         self.tbl_overseas_orders.setHorizontalHeaderLabels(
-            ["종목", "매수가", "체결가", "주문상태", "수익", "수량/잔량", "비고"]
+            ["종목", "매수가", "체결가", "주문상태", "수익", "체결/잔량", "비고"]
         )
         for table in (
             self.tbl_overseas_holdings,
@@ -4020,9 +5289,24 @@ class TradingWindow(QMainWindow):
             return 0
         return 0
 
-    def _on_scan_finished(self, picked: List[str]) -> None:
+    def _on_scan_finished(self, picked: List[str], quality_scan_intent: bool = False) -> None:
         if self.kiwoom is None:
             return
+        if self.engine is not None:
+            mc_n = max(0, int(SCAN_QUALITY_MC_TOP_N))
+            if quality_scan_intent and mc_n > 0:
+                al = _mc_top_allowlist_for_scan(mc_n)
+                self.engine.set_scan_quality_context(True, al)
+                if al:
+                    self._append_log(
+                        f"[SCAN] 우량 슬롯: 시총 허용 {len(al)}종 — 허용 종목 매수 규칙=눌림"
+                    )
+                else:
+                    self._append_log(
+                        "[SCAN] 우량 슬롯인데 시총 허용 목록 미확보 — 눌림 허용집합 비움"
+                    )
+            else:
+                self.engine.set_scan_quality_context(False, None)
         today = datetime.date.today()
         existing = list(self.engine.stock_codes) if self.engine is not None else []
         picked_clean = [str(c).strip() for c in list(picked or []) if str(c).strip()]
@@ -4275,7 +5559,26 @@ class TradingWindow(QMainWindow):
             base_capital = float(TOTAL_LIMIT_KRW) if float(TOTAL_LIMIT_KRW) > 0 else 1.0
             cum_ret_pct = (cumulative_pnl / base_capital) * 100.0
             est_asset = float(TOTAL_LIMIT_KRW) + cumulative_pnl
-            self.lbl_total_pnl.setText(f"누적손익금액: {int(cumulative_pnl):+,}원")
+            self.lbl_total_pnl.setText(f"앱·CSV 실현+평가 추정: {int(cumulative_pnl):+,}원")
+            acc_iv = getattr(self.engine, "opw_accum_invest_profit_loss_krw", None)
+            month_iv = getattr(self.engine, "opw_month_invest_pnl_krw", None)
+            day_iv = getattr(self.engine, "opw_daily_invest_pnl_krw", None)
+            at_iv = getattr(self.engine, "opw_eval_fetched_at", None)
+            age_s = ""
+            if isinstance(at_iv, datetime.datetime):
+                sec = int((datetime.datetime.now() - at_iv).total_seconds())
+                age_s = f"·갱신 {max(0, sec // 60)}분전"
+            kv_parts: List[str] = []
+            if acc_iv is not None:
+                kv_parts.append(f"누적투자손익 {int(acc_iv):+,}")
+            if month_iv is not None:
+                kv_parts.append(f"당월 {int(month_iv):+,}")
+            if day_iv is not None:
+                kv_parts.append(f"당일 {int(day_iv):+,}")
+            if kv_parts:
+                self.lbl_opw_pnl.setText("키움(opw00004) " + " ".join(kv_parts) + f"원 {age_s}".strip())
+            else:
+                self.lbl_opw_pnl.setText(f"키움(opw00004 누적·당일): — {age_s}".strip())
             self.lbl_total_ret.setText(f"누적수익률: {cum_ret_pct:+.2f}%")
             self.lbl_est_asset.setText(f"추정예탁자산: {int(est_asset):,}원")
             if self.kiwoom is not None:
@@ -4319,11 +5622,16 @@ class TradingWindow(QMainWindow):
             else:
                 # 평상시에는 힌트 라벨을 숨겨 기존 UI 밀도를 유지
                 self.lbl_hint.setVisible(False)
+            qtag = ""
+            if self.engine is not None and callable(getattr(self.engine, "scan_quality_ui_tag", None)):
+                qtag = self.engine.scan_quality_ui_tag()
             sm = getattr(self.engine, "strategy_manager", None)
             if sm is not None:
-                self.lbl_strategy.setText(sm.summary_line())
+                ai_txt = self.engine.ai_status_line() if callable(getattr(self.engine, "ai_status_line", None)) else "AI:-"
+                self.lbl_strategy.setText(f"{sm.summary_line()} | {ai_txt}{qtag}")
             else:
-                self.lbl_strategy.setText("전략: -")
+                ai_txt = self.engine.ai_status_line() if callable(getattr(self.engine, "ai_status_line", None)) else "AI:-"
+                self.lbl_strategy.setText(f"전략: - | {ai_txt}{qtag}")
             now = datetime.datetime.now()
             if (
                 self._last_real_stats_log_at is None
@@ -4649,73 +5957,120 @@ class TradingWindow(QMainWindow):
                     buy_px_str = f"{buy_px:,}" if buy_px > 0 else "-"
                     pending_meta = (self.engine.pending_orders or {}).get(code, {}) or {}
                     req_qty = int(pending_meta.get("qty", 0) or 0)
-                    remain_str = f"{req_qty:,} / {req_qty:,}" if req_qty > 0 else "-"
+                    filled_so_far = int(pending_meta.get("fills_notified_qty", 0) or 0)
+                    remain = max(0, req_qty - filled_so_far)
+                    if req_qty > 0:
+                        remain_str = f"{filled_so_far:,} / {remain:,}"
+                    else:
+                        remain_str = "-"
                     order_rows.append([symbol, buy_px_str, "-", status, "-", remain_str, "-"])
                     order_keys.add((code, status))
 
             # 최근 체결된 매수/매도도 우측 "매수/매도종목"에 함께 표시
+            # 동일 종목·당일 여러 번 부분체결되면 레코드가 여러 줄인데, 기존엔 (code,상태)로
+            # 최근 한 줄만 남아 HTS 합계(예: 43주)와 어긋남 → 일자별로 수량·가중평단 합산
             try:
                 now_dt = datetime.datetime.now()
                 cutoff = now_dt - datetime.timedelta(days=7)
                 records = self.trade_tracker.all_records() if self.trade_tracker is not None else []
-                for r in reversed(records):
+                window_recs: List[Any] = []
+                for r in records:
                     if r.ts < cutoff:
                         continue
-                    side = str(r.side).upper()
-                    if side not in ("BUY", "SELL"):
+                    side_u = str(r.side).upper()
+                    if side_u not in ("BUY", "SELL"):
                         continue
-                    code = str(r.code).strip()
-                    if len(code) != 6 or not code.isdigit():
+                    code6 = str(r.code).strip()
+                    if len(code6) != 6 or not code6.isdigit():
                         continue
-                    status = "매수 체결" if side == "BUY" else "매도 체결"
-                    key = (code, status)
-                    if key in order_keys:
+                    window_recs.append(r)
+
+                grp_map: Dict[tuple, List[Any]] = defaultdict(list)
+                for r in window_recs:
+                    key_g = (str(r.code).strip(), str(r.side).upper(), r.ts.date())
+                    grp_map[key_g].append(r)
+
+                sorted_groups = sorted(
+                    grp_map.items(),
+                    key=lambda kv: max(x.ts for x in kv[1]),
+                    reverse=True,
+                )
+
+                for (code, side_upper, _grp_day), grp in sorted_groups:
+                    grp_sorted = sorted(grp, key=lambda x: x.ts)
+                    status = "매수 체결" if side_upper == "BUY" else "매도 체결"
+                    agg_key = (code, status, _grp_day)
+                    if agg_key in order_keys:
                         continue
+
+                    total_qty = sum(max(0, int(getattr(x, "qty", 0) or 0)) for x in grp_sorted)
+                    if total_qty <= 0:
+                        continue
+                    w_den = sum(int(x.qty) for x in grp_sorted if int(getattr(x, "qty", 0) or 0) > 0)
+                    w_num = sum(
+                        float(x.price) * int(x.qty)
+                        for x in grp_sorted
+                        if int(getattr(x, "qty", 0) or 0) > 0
+                    )
+                    exec_px_ag = int(round(w_num / float(w_den))) if w_den > 0 else int(
+                        float(grp_sorted[-1].price) or 0.0
+                    )
+                    earliest = grp_sorted[0].ts
+                    latest = grp_sorted[-1].ts
+
                     name = self.code_names.get(code, code)
                     if not str(name).strip() or str(name).strip() == str(code):
                         try:
-                            symbol = str(self.kiwoom.get_master_code_name(code)) if self.kiwoom is not None else str(code)
+                            symbol = (
+                                str(self.kiwoom.get_master_code_name(code))
+                                if self.kiwoom is not None
+                                else str(code)
+                            )
                         except Exception:
                             symbol = str(code)
                     else:
                         symbol = str(name)
-                    exec_px = int(float(r.price) or 0.0)
-                    exec_px_str = f"{exec_px:,}" if exec_px > 0 else "-"
-                    buy_px = 0
-                    if side == "BUY":
-                        # 매수 체결은 체결가 자체를 매수가로 사용
-                        buy_px = exec_px
+
+                    exec_px_str = f"{exec_px_ag:,}" if exec_px_ag > 0 else "-"
+
+                    if side_upper == "BUY":
+                        buy_px_str = f"{exec_px_ag:,}" if exec_px_ag > 0 else "-"
+                        profit_str = "-"
                     else:
-                        # 매도 체결은 수익률(우선) 또는 실현손익으로 원매수가 역산
-                        pnl_pct = getattr(r, "pnl_pct", None)
-                        pnl_krw = float(getattr(r, "realized_pnl_krw", 0.0) or 0.0)
-                        qty_v = max(1, int(getattr(r, "qty", 0) or 0))
-                        if pnl_pct is not None:
-                            try:
-                                denom = 1.0 + (float(pnl_pct) / 100.0)
-                                if abs(denom) > 1e-9:
-                                    buy_px = int(round(float(exec_px) / denom))
-                            except Exception:
-                                buy_px = 0
-                        if buy_px <= 0:
-                            try:
-                                buy_px = int(round(float(exec_px) - (pnl_krw / float(qty_v))))
-                            except Exception:
-                                buy_px = 0
-                    buy_px_str = f"{buy_px:,}" if buy_px > 0 else "-"
-                    profit_str = "-"
-                    if side == "SELL":
-                        pnl_krw = float(getattr(r, "realized_pnl_krw", 0.0) or 0.0)
-                        pnl_pct = getattr(r, "pnl_pct", None)
-                        if pnl_pct is not None:
-                            profit_str = f"{int(pnl_krw):+,} / {float(pnl_pct):+.2f}%"
+                        total_pnl = sum(
+                            float(getattr(x, "realized_pnl_krw", 0) or 0) for x in grp_sorted
+                        )
+                        apx = (
+                            exec_px_ag - int(round(total_pnl / float(total_qty)))
+                            if total_qty > 0
+                            else 0
+                        )
+                        buy_px_ag = max(1, apx)
+                        buy_px_str = f"{buy_px_ag:,}"
+                        pct_est = (
+                            ((float(exec_px_ag) / float(buy_px_ag)) - 1.0) * 100.0
+                            if buy_px_ag > 0 and exec_px_ag > 0
+                            else None
+                        )
+                        if pct_est is not None and math.isfinite(pct_est):
+                            profit_str = f"{int(round(total_pnl)):+,} / {float(pct_est):+.2f}%"
                         else:
-                            profit_str = f"{int(pnl_krw):+,}"
-                    qty_v = int(getattr(r, "qty", 0) or 0)
-                    remain_str = f"{qty_v:,} / 0" if qty_v > 0 else "-"
-                    note = r.ts.strftime("%m-%d %H:%M:%S")
-                    order_rows.append([symbol, buy_px_str, exec_px_str, status, profit_str, remain_str, note])
-                    order_keys.add(key)
+                            profit_str = f"{int(round(total_pnl)):+,}"
+
+                    remain_str = f"{total_qty:,} / 0"
+                    split_n = len(grp_sorted)
+                    if split_n <= 1:
+                        note = latest.strftime("%m-%d %H:%M:%S")
+                    else:
+                        note = (
+                            f"{earliest.strftime('%m-%d %H:%M')}~{latest.strftime('%H:%M')} "
+                            f"({split_n}회분)"
+                        )
+
+                    order_rows.append(
+                        [symbol, buy_px_str, exec_px_str, status, profit_str, remain_str, note]
+                    )
+                    order_keys.add(agg_key)
             except Exception:
                 pass
 
@@ -4865,17 +6220,19 @@ def main():
             def _scan_worker() -> None:
                 started = datetime.datetime.now()
                 _scan_console(f"[SCAN] 백그라운드 검색 스레드 시작 (top_n={SCAN_TOP_N})")
+                qs = False
                 try:
-                    picked = scan_market(kiwoom, top_n=SCAN_TOP_N)
+                    picked, qs = scan_market(kiwoom, top_n=SCAN_TOP_N)
                 except Exception as e:
                     _log(f"[SCAN] background failed: {e}")
                     _scan_console(f"[SCAN] 백그라운드 실패: {e}")
                     window.scan_message.emit(f"[SCAN] 실패: {e}")
                     picked = []
+                    qs = False
                 elapsed = int((datetime.datetime.now() - started).total_seconds())
                 _scan_console(f"[SCAN] 백그라운드 검색 종료: {len(picked)}종목, {elapsed}s")
                 window.scan_message.emit(f"[SCAN] 완료: {len(picked)}종목 선정, {elapsed}s 소요")
-                window.scan_finished.emit(picked)
+                window.scan_finished.emit(picked, bool(qs))
                 scan_state["last_scan_at"] = datetime.datetime.now()
                 scan_state["running"] = False
 

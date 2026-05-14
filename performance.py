@@ -17,9 +17,10 @@ import csv
 import math
 import os
 import threading
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -159,6 +160,72 @@ def distinct_codes(records: Iterable[TradeRecord]) -> List[str]:
     """로그에 등장한 종목코드 정렬 목록."""
     s = {str(r.code).strip() for r in records if str(r.code).strip()}
     return sorted(s)
+
+
+def normalize_stock_code(raw: str) -> str:
+    """
+    키움 TR / CSV 종목코드 형식을 6자리 숫자로 통일.
+    main.TradingEngine.sync_portfolio와 동일한 규칙.
+    """
+    key_raw = str(raw or "").strip().lstrip("A").replace(".KS", "").replace(".KQ", "")
+    key_digits = "".join(ch for ch in key_raw if ch.isdigit())
+    if len(key_digits) >= 6:
+        code6 = key_digits[-6:]
+        if code6.isdigit():
+            return code6
+    if len(key_raw) == 6 and key_raw.isdigit():
+        return key_raw
+    return key_raw.strip() or ""
+
+
+def fifo_open_positions_from_records(
+    records: List[TradeRecord],
+) -> Tuple[Dict[str, Dict[str, float]], Dict[str, int]]:
+    """
+    거래 로그를 시간순으로 적용해 미청산 잔고를 FIFO로 재구성.
+
+    반환:
+    - positions: code -> {"qty": float, "avg_price": float}
+    - oversell: CSV에서 매도가 매수 잔량을 초과한 종목별 초과 수량(로그 불일치 힌트)
+    """
+    lots: Dict[str, Deque[List[float]]] = defaultdict(deque)
+    oversell: Dict[str, int] = {}
+
+    for r in sorted(records, key=lambda x: x.ts):
+        code = normalize_stock_code(r.code)
+        if not code:
+            continue
+        qty = _safe_int(r.qty, 0)
+        price = _safe_float(r.price, 0.0)
+        if qty <= 0 or price <= 0:
+            continue
+        if r.side == "BUY":
+            lots[code].append([float(qty), price])
+            continue
+        rem = qty
+        while rem > 0:
+            dq = lots[code]
+            if not dq:
+                oversell[code] = oversell.get(code, 0) + rem
+                break
+            lot = dq[0]
+            take = min(rem, int(lot[0]))
+            lot[0] -= float(take)
+            rem -= take
+            if lot[0] <= 0:
+                dq.popleft()
+
+    out: Dict[str, Dict[str, float]] = {}
+    for code, dq in lots.items():
+        total_q = sum(int(x[0]) for x in dq)
+        if total_q <= 0:
+            continue
+        cost = sum(float(x[0]) * float(x[1]) for x in dq)
+        out[code] = {
+            "qty": float(total_q),
+            "avg_price": cost / float(total_q) if total_q > 0 else 0.0,
+        }
+    return out, oversell
 
 
 def _total_buy_cost(records: Iterable[TradeRecord]) -> float:

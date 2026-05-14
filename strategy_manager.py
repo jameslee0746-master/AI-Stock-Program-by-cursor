@@ -5,7 +5,7 @@ strategy_manager.py — 멀티 전략 비교·성과 수집·AI(RandomForest) �
 구성
 ----
 - 3개 전략: trend(MA 골든크로스 등), volume(거래량 강세), ai(추세+거래량 복합, 실전 ML과 유사)
-- yfinance 일봉으로 종목당 간이 시뮬 → 수익률, 승률, MDD, 거래 횟수 산출 후 종목 평균
+- yfinance OHLC 일봉으로 종목당 시뮬; **청산 규격은 매수 AI 라벨과 동일**(ai_objective_shared: 호라이즌 스탑/익절·왕복비용)
 - 점수: score = 수익률(%) - STRATEGY_MDD_WEIGHT * |MDD(%)|  (기본 가중 0.5)
 
 시장 국면(상승/하락/횡보)
@@ -28,12 +28,13 @@ AI 전략 선택
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import yfinance as yf  # type: ignore
@@ -42,15 +43,25 @@ except Exception:
 
 from strategy_ai_selector import StrategyAISelector
 
+import ai_objective_shared as aos
+
+STRATEGY_OBJECTIVE_CFG = aos.AiObjectiveConfig.from_env()
+
 # 전략 재평가 주기(초). 하루 1회: STRATEGY_EVAL_INTERVAL_SEC=86400
 STRATEGY_EVAL_INTERVAL_SEC = int(os.environ.get("STRATEGY_EVAL_INTERVAL_SEC", str(6 * 3600)))
 STRATEGY_EVAL_LOOKBACK = int(os.environ.get("STRATEGY_EVAL_LOOKBACK", "50"))
 STRATEGY_EVAL_MAX_CODES = int(os.environ.get("STRATEGY_EVAL_MAX_CODES", "5"))
 STRATEGY_MDD_WEIGHT = float(os.environ.get("STRATEGY_MDD_WEIGHT", "0.5"))
+STRATEGY_DATA_DIR = os.environ.get(
+    "STRATEGY_DATA_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategy_data"),
+)
 
 STRATEGY_TREND = "trend"
 STRATEGY_VOLUME = "volume"
 STRATEGY_AI = "ai"
+# 실전 엔진(scan 로테이션+시총허용종목) 전용: 전략 선택기(StrategyAISelector)에는 포함하지 않음.
+STRATEGY_QUALITY_DIP = "quality_dip"
 STRATEGY_IDS = (STRATEGY_TREND, STRATEGY_VOLUME, STRATEGY_AI)
 
 # 시장 지수(콤마 구분 시 순차 시도). 기본: 코스피 → 코스닥
@@ -83,8 +94,8 @@ def _to_yf_ticker(code: str) -> List[str]:
     return [s]
 
 
-def _load_ohlcv(code: str) -> Optional[Tuple[List[float], List[float]]]:
-    """yfinance로 종가·거래량 시계열 (오래된→최신). 실패 시 None."""
+def _load_ohlcv(code: str) -> Optional[Tuple[List[float], List[float], List[float], List[float]]]:
+    """yfinance로 종가·고가·저가·거래량 시계열 (오래된→최신). 실패 시 None."""
     if yf is None:
         return None
     for ticker in _to_yf_ticker(code):
@@ -99,21 +110,30 @@ def _load_ohlcv(code: str) -> Optional[Tuple[List[float], List[float]]]:
             )
             if df is None or getattr(df, "empty", True):
                 continue
-            if "Close" not in df.columns or "Volume" not in df.columns:
+            need = ("Close", "High", "Low", "Volume")
+            if not all(col in df.columns for col in need):
                 continue
-            sub = df[["Close", "Volume"]].dropna()
+            sub = df[list(need)].dropna()
             closes = [_safe_float(x, float("nan")) for x in sub["Close"].tolist()]
+            highs = [_safe_float(x, float("nan")) for x in sub["High"].tolist()]
+            lows = [_safe_float(x, float("nan")) for x in sub["Low"].tolist()]
             vols = [_safe_float(x, float("nan")) for x in sub["Volume"].tolist()]
             out_c: List[float] = []
+            out_h: List[float] = []
+            out_l: List[float] = []
             out_v: List[float] = []
-            for c0, v0 in zip(closes, vols):
-                if not (c0 == c0 and v0 == v0) or c0 <= 0 or v0 < 0:
+            for c0, h0, lo0, v0 in zip(closes, highs, lows, vols):
+                if not (
+                    c0 == c0 and h0 == h0 and lo0 == lo0 and v0 == v0 and c0 > 0 and h0 > 0 and lo0 > 0 and v0 >= 0
+                ):
                     continue
-                out_c.append(c0)
-                out_v.append(v0)
+                out_c.append(float(c0))
+                out_h.append(float(h0))
+                out_l.append(float(lo0))
+                out_v.append(float(v0))
             if len(out_c) < STRATEGY_EVAL_LOOKBACK:
                 continue
-            return out_c, out_v
+            return out_c, out_h, out_l, out_v
         except Exception:
             continue
     return None
@@ -138,20 +158,29 @@ def _mdd_from_equity(equity: List[float]) -> float:
 def _simulate_strategy(
     strategy_id: str,
     closes: List[float],
+    highs: List[float],
+    lows: List[float],
     vols: List[float],
     start_idx: int = 20,
 ) -> Tuple[float, float, float, float]:
     """
-    단일 종목·단일 전략 간이 시뮬.
+    단일 종목·단일 전략 시뮬.
 
     Returns
     -------
     (누적수익률%, MDD%, 승률 0~1, 거래(신호) 횟수)
-    신호가 잡힌 날의 익일 수익률만 누적; 승률은 신호일 대비 익일 종가 상승 비율.
+
+    신호 발생 시 매수 AI 학습 라벨과 같은 방식(ai_objective_shared)으로
+    진입종가 대비 호라이즌 내 스탑/익절 청산·왕복비용을 반영해 구간 손익률 합산.
     """
-    n = min(len(closes), len(vols))
+    n = min(len(closes), len(highs), len(lows), len(vols))
     if n < start_idx + 2:
         return 0.0, 0.0, 0.0, 0.0
+    closes = closes[:n]
+    highs = highs[:n]
+    lows = lows[:n]
+    vols = vols[:n]
+    cfg = STRATEGY_OBJECTIVE_CFG
 
     equity: List[float] = [1.0]
 
@@ -200,16 +229,24 @@ def _simulate_strategy(
     eq = 1.0
     wins = 0
     trades = 0
-    for t in range(start_idx, n - 1):
-        if fn(t):
-            trades += 1
-            p0 = closes[t]
-            p1 = closes[t + 1]
-            if p0 > 0:
-                r = p1 / p0 - 1.0
-                eq *= 1.0 + r
-                if r > 0:
-                    wins += 1
+    hmax = max(1, int(cfg.label_horizon_days))
+    for t in range(start_idx, n):
+        if t + hmax >= n:
+            break
+        if not fn(t):
+            equity.append(eq)
+            continue
+        entry = float(closes[t])
+        if entry <= 0:
+            equity.append(eq)
+            continue
+        atr_pct = aos.compute_atr_pct(highs[: t + 1], lows[: t + 1], closes[: t + 1], int(cfg.atr_period))
+        exit_px = aos.resolve_exit_price(closes, highs, lows, t, atr_pct, cfg)
+        net_r = aos.net_return_after_costs(entry, exit_px, cfg)
+        trades += 1
+        eq *= 1.0 + net_r
+        if net_r > 0:
+            wins += 1
         equity.append(eq)
 
     total_ret_pct = (eq - 1.0) * 100.0
@@ -323,10 +360,10 @@ def analyze_market_regime(closes: List[float]) -> MarketRegimeSnapshot:
 
 
 def _composite_closes_from_loaded(
-    loaded: Dict[str, Tuple[List[float], List[float]]],
+    loaded: Dict[str, Tuple[List[float], List[float], List[float], List[float]]],
 ) -> Optional[Tuple[List[float], str]]:
     """로드된 종목들의 공통 구간 종가 평균(등가 지수)."""
-    arrays = [list(c) for c, _v in loaded.values()]
+    arrays = [list(row[0]) for row in loaded.values()]
     if not arrays:
         return None
     ln = min(len(a) for a in arrays)
@@ -346,7 +383,7 @@ def _load_benchmark_closes() -> Optional[Tuple[List[float], str]]:
         data = _load_ohlcv(sym)
         if data is None:
             continue
-        c, _v = data
+        c, _h, _l, _v = data
         if len(c) >= STRATEGY_EVAL_LOOKBACK:
             return c, f"index:{sym}"
     return None
@@ -427,6 +464,11 @@ class StrategyManager:
         self._selector = StrategyAISelector(STRATEGY_IDS)
         self.last_ai_reason: str = ""
         self.last_market_regime: Optional[MarketRegimeSnapshot] = None
+        self._data_dir = STRATEGY_DATA_DIR
+        self._eval_history_path = os.path.join(self._data_dir, "strategy_eval_history.jsonl")
+        self._training_rows_path = os.path.join(self._data_dir, "strategy_training_rows.jsonl")
+        self._validation_report_path = os.path.join(self._data_dir, "strategy_validation_report.json")
+        self._load_selector_training_rows()
 
     def set_emit_log(self, fn: Optional[Callable[[str], None]]) -> None:
         self._emit_log = fn
@@ -437,6 +479,138 @@ class StrategyManager:
                 self._emit_log(msg)
             except Exception:
                 pass
+
+    def _ensure_data_dir(self) -> None:
+        try:
+            os.makedirs(self._data_dir, exist_ok=True)
+        except OSError:
+            pass
+
+    def _append_jsonl(self, path: str, row: Dict[str, Any]) -> None:
+        self._ensure_data_dir()
+        try:
+            with open(path, "a", encoding="utf-8", newline="") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def _write_json(self, path: str, payload: Dict[str, Any]) -> None:
+        self._ensure_data_dir()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _load_selector_training_rows(self) -> None:
+        path = self._training_rows_path
+        if not os.path.isfile(path):
+            return
+        rows: List[Tuple[List[float], int]] = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        raw = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    x = raw.get("x")
+                    y = raw.get("y")
+                    if isinstance(x, list) and y is not None:
+                        rows.append(([float(v) for v in x], int(y)))
+        except (OSError, TypeError, ValueError):
+            return
+        loaded = self._selector.load_training_rows(rows)
+        if loaded:
+            self._log(f"[STRAT] 저장된 AI학습행 로드: {loaded}개")
+
+    def _record_to_dict(self, rec: StrategyRecord) -> Dict[str, float]:
+        return {
+            "return_pct": float(rec.return_pct),
+            "mdd_pct": float(rec.mdd_pct),
+            "win_rate": float(rec.win_rate),
+            "trade_count": float(rec.trade_count),
+            "score": float(rec.score),
+            "evaluated_at": float(rec.evaluated_at),
+        }
+
+    def _market_to_dict(self, regime: MarketRegimeSnapshot) -> Dict[str, Any]:
+        return {
+            "label": regime.label,
+            "label_ko": regime.label_ko,
+            "ret_20d_pct": float(regime.ret_20d_pct),
+            "dist_ma20_pct": float(regime.dist_ma20_pct),
+            "ma20_slope_pctp": float(regime.ma20_slope_pctp),
+            "vol_20d_pctp": float(regime.vol_20d_pctp),
+            "source": regime.source,
+        }
+
+    def _persist_evaluation(
+        self,
+        codes: List[str],
+        loaded_count: int,
+        active_before: str,
+        chosen: Optional[str],
+        snapshots: Dict[str, StrategyRecord],
+        records_for_selection: Dict[str, StrategyRecord],
+        regime: MarketRegimeSnapshot,
+    ) -> None:
+        active_after = chosen or active_before
+        coverage = loaded_count / float(max(1, len(codes)))
+        row = {
+            "ts": time.time(),
+            "codes": list(codes[:STRATEGY_EVAL_MAX_CODES]),
+            "active_before": active_before,
+            "active_after": active_after,
+            "chosen": chosen,
+            "ai_reason": self.last_ai_reason,
+            "training_rows": self._selector.training_sample_count,
+            "market": self._market_to_dict(regime),
+            "data_quality": {
+                "requested_codes": float(len(codes[:STRATEGY_EVAL_MAX_CODES])),
+                "loaded_codes": float(loaded_count),
+                "coverage_ratio": float(coverage),
+            },
+            "records": {k: self._record_to_dict(v) for k, v in snapshots.items()},
+            "records_for_selection": {
+                k: {"score": float(v.score)} for k, v in records_for_selection.items()
+            },
+        }
+        self._append_jsonl(self._eval_history_path, row)
+
+        added = self._selector.last_added_training_row
+        if added is not None:
+            x, y = added
+            self._append_jsonl(
+                self._training_rows_path,
+                {
+                    "ts": time.time(),
+                    "market_label": regime.label,
+                    "x": [float(v) for v in x],
+                    "y": int(y),
+                },
+            )
+
+        scores = [float(r.score) for r in records_for_selection.values()]
+        best_score = max(scores) if scores else 0.0
+        active_rec = records_for_selection.get(active_after)
+        active_score = float(active_rec.score) if active_rec is not None else 0.0
+        self._write_json(
+            self._validation_report_path,
+            {
+                "generated_at": time.time(),
+                "window_size": 1,
+                "active_strategy": active_after,
+                "ai_reason": self.last_ai_reason,
+                "avg_active_score": active_score,
+                "avg_best_score": best_score,
+                "avg_score_gap_to_best": best_score - active_score,
+                "avg_data_coverage_ratio": float(coverage),
+                "training_rows": self._selector.training_sample_count,
+                "min_training_samples": self._selector.min_samples,
+                "market": self._market_to_dict(regime),
+            },
+        )
 
     def schedule_reevaluation(self, stock_codes: List[str]) -> None:
         """시장 루프에서 호출. 주기·중복 실행 방지 후 백그라운드 평가."""
@@ -470,7 +644,7 @@ class StrategyManager:
         )
 
         # 종목당 yfinance 호출 1회만(3전략 동일 데이터 재사용)
-        loaded: Dict[str, Tuple[List[float], List[float]]] = {}
+        loaded: Dict[str, Tuple[List[float], List[float], List[float], List[float]]] = {}
         for code in codes[:STRATEGY_EVAL_MAX_CODES]:
             data = _load_ohlcv(code)
             if data is not None:
@@ -487,8 +661,9 @@ class StrategyManager:
             mdds: List[float] = []
             wrs: List[float] = []
             tcs: List[float] = []
-            for _code, (c, v) in loaded.items():
-                rp, md, wr, tc = _simulate_strategy(sid, c, v)
+            for _code, row in loaded.items():
+                c, h, low, vol = row
+                rp, md, wr, tc = _simulate_strategy(sid, c, h, low, vol)
                 rets.append(rp)
                 mdds.append(md)
                 wrs.append(wr)
@@ -556,6 +731,7 @@ class StrategyManager:
         records_for_selection = _apply_regime_to_records(snapshots, regime)
         market_feats = regime.to_feature_list()
 
+        prev = self.active_strategy_id
         chosen = self._selector.process_evaluation(records_for_selection, market_feats)
         if self._selector.last_buffer_reset_reason:
             self._log(
@@ -563,8 +739,16 @@ class StrategyManager:
             )
             self._selector.last_buffer_reset_reason = ""
         self.last_ai_reason = self._selector.last_decision_reason
+        self._persist_evaluation(
+            codes=codes,
+            loaded_count=len(loaded),
+            active_before=prev,
+            chosen=chosen,
+            snapshots=snapshots,
+            records_for_selection=records_for_selection,
+            regime=regime,
+        )
 
-        prev = self.active_strategy_id
         if chosen is None:
             self._log(
                 f"[STRAT] AI 선택 보류({self.last_ai_reason}) — 활성 전략 유지: {prev}"

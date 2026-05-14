@@ -98,15 +98,30 @@ class StrategyAISelector:
         self._model: Optional[object] = None
         self.last_decision_reason: str = "init"
         self.last_buffer_reset_reason: str = ""
+        self.last_added_training_row: Optional[Tuple[List[float], int]] = None
 
     @property
     def training_sample_count(self) -> int:
         return len(self._X)
 
+    def load_training_rows(self, rows: List[Tuple[List[float], int]]) -> int:
+        loaded = 0
+        for x, y in rows:
+            if len(x) != N_TOTAL_FEATURES:
+                continue
+            yi = int(y)
+            if yi < 0 or yi >= len(self.strategy_ids):
+                continue
+            self._X.append([float(v) for v in x])
+            self._y.append(yi)
+            loaded += 1
+        return loaded
+
     def _clear_training_buffer(self, reason: str) -> None:
         self._X.clear()
         self._y.clear()
         self._pending_features = None
+        self.last_added_training_row = None
         self.last_buffer_reset_reason = reason
 
     def _argmax_score_sid(self, records: Dict[str, Any]) -> str:
@@ -126,6 +141,7 @@ class StrategyAISelector:
         market_features: Optional[List[float]] = None,
     ) -> Optional[str]:
         feats = build_feature_vector(self.strategy_ids, records, market_features)
+        self.last_added_training_row = None
 
         if self._pending_features is not None and len(self._pending_features) != len(feats):
             self._clear_training_buffer("feature_dim_changed")
@@ -133,19 +149,21 @@ class StrategyAISelector:
         if self._pending_features is not None:
             winner_sid = self._argmax_score_sid(records)
             y = _strategy_index(self.strategy_ids, winner_sid)
-            self._X.append(list(self._pending_features))
+            x = list(self._pending_features)
+            self._X.append(x)
             self._y.append(y)
+            self.last_added_training_row = (x, y)
 
         self._pending_features = list(feats)
 
         n = len(self._X)
         if n < self.min_samples:
-            self.last_decision_reason = f"sample_short({n}/{self.min_samples})"
-            return None
+            self.last_decision_reason = f"sample_short_rule({n}/{self.min_samples})"
+            return self._argmax_score_sid(records)
 
         if RandomForestClassifier is None:
-            self.last_decision_reason = "sklearn_missing"
-            return None
+            self.last_decision_reason = "sklearn_missing_rule"
+            return self._argmax_score_sid(records)
 
         uniq = set(self._y)
         if len(uniq) < 2:
