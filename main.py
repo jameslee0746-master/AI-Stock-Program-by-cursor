@@ -2239,6 +2239,7 @@ class TradingEngine:
 
         self._last_ma_refresh_date: Optional[datetime.date] = None
         self._need_portfolio_sync = True
+        self._last_periodic_holdings_sync_at: Optional[datetime.datetime] = None
         self._last_positions_sync_warn_at: Optional[datetime.datetime] = None
         self.last_holdings_tr_rows: int = 0
         self._last_holdings_brief: str = ""
@@ -4280,6 +4281,7 @@ class TradingEngine:
             self._emit_log(
                 f"[CHEJAN-FILL] BUY {code} qty={use_qty} px={avg_price_int} cum={meta['fills_notified_qty']}/{ord_qty}"
             )
+            self._need_portfolio_sync = True  # 체결 직후 다음 틱(≤2초)에 잔고 즉시 갱신
 
         elif side == "SELL":
             prev_avg = int(meta.get("prev_avg_price", 0) or 0)
@@ -4324,6 +4326,7 @@ class TradingEngine:
                 f"[CHEJAN-FILL] SELL {code} qty={use_qty} px={int(round(px))} "
                 f"cum={meta['fills_notified_qty']}/{ord_qty}"
             )
+            self._need_portfolio_sync = True  # 체결 직후 다음 틱(≤2초)에 잔고 즉시 갱신
 
     def _reconcile_orders_and_portfolio(self) -> None:
         """
@@ -4537,12 +4540,31 @@ class TradingEngine:
         )
         self._daily_report_done_date = now.date()
 
+    def _maybe_periodic_holdings_sync(self) -> None:
+        """60초마다 또는 체결 직후 플래그 세팅 시 잔고 TR을 자동 갱신한다."""
+        HOLDINGS_SYNC_INTERVAL_SEC = 60.0
+        now = datetime.datetime.now()
+        due = (
+            self._last_periodic_holdings_sync_at is None
+            or (now - self._last_periodic_holdings_sync_at).total_seconds() >= HOLDINGS_SYNC_INTERVAL_SEC
+        )
+        if self._need_portfolio_sync or due:
+            try:
+                self.sync_portfolio(
+                    password=self._account_password if hasattr(self, "_account_password") else ""
+                )
+            except Exception:
+                pass
+            self._need_portfolio_sync = False
+            self._last_periodic_holdings_sync_at = now
+
     def on_tick(self):
         today = datetime.date.today()
         self._maybe_reset_daily_state(today)
 
         if not self._is_market_open():
             self._sync_holding_current_prices(interval_sec=30.0)
+            self._maybe_periodic_holdings_sync()
             self._emit_daily_report_if_needed()
             return
 
@@ -4557,9 +4579,7 @@ class TradingEngine:
         if sm is not None and self.stock_codes:
             sm.schedule_reevaluation(self.stock_codes)
 
-        if self._need_portfolio_sync:
-            self.sync_portfolio(password=self._account_password if hasattr(self, "_account_password") else "")
-            self._need_portfolio_sync = False
+        self._maybe_periodic_holdings_sync()
 
         # AI 모델은 하루 1회만(시장 상황에 따라 바꾸고 싶으면 여기 튜닝)
         if AI_AVAILABLE and self.ai_model is None and self.ai_trained_date != today:
