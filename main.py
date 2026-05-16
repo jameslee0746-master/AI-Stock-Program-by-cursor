@@ -66,6 +66,18 @@ try:
 except Exception:
     yf = None  # type: ignore
 
+try:
+    from news_sentiment import get_news_sentiment, prefetch_news_batch, cache_summary as _news_cache_summary
+    NEWS_SENTIMENT_AVAILABLE = True
+except Exception:
+    NEWS_SENTIMENT_AVAILABLE = False
+    def get_news_sentiment(code: str, force: bool = False) -> float:  # type: ignore[misc]
+        return 0.0
+    def prefetch_news_batch(codes) -> dict:  # type: ignore[misc]
+        return {}
+    def _news_cache_summary() -> str:  # type: ignore[misc]
+        return "뉴스 모듈 미설치"
+
 if yf is not None:
     # yfinance의 "Failed download / possibly delisted" 원문 스팸 출력 억제
     try:
@@ -233,6 +245,7 @@ AI_FEATURE_NAMES = [
     "trade_win_rate",
     "trade_avg_pnl_pct",
     "trade_count_norm",
+    "news_sentiment",   # 뉴스 감성 점수 (-1.0 ~ +1.0)
 ]
 
 # ATR 기반 종목별 리스크. 변동성 큰 종목은 손절/익절 폭을 자동으로 넓힙니다.
@@ -2243,6 +2256,8 @@ class TradingEngine:
         self._need_portfolio_sync = True
         self._last_periodic_holdings_sync_at: Optional[datetime.datetime] = None
         self._last_positions_sync_warn_at: Optional[datetime.datetime] = None
+        self._last_news_prefetch_at: Optional[datetime.datetime] = None
+        self._news_prefetch_thread: Optional[threading.Thread] = None
         self.last_holdings_tr_rows: int = 0
         self._last_holdings_brief: str = ""
         self._last_buy_block_reason_at: Dict[str, datetime.datetime] = {}
@@ -2896,9 +2911,12 @@ class TradingEngine:
         f10 = atr_pct
         f11, f12, f13 = self._trade_features_for_code(code)
 
+        # 뉴스 감성 점수 (캐시 우선, 네트워크 블로킹 없음)
+        f14 = float(get_news_sentiment(code)) if NEWS_SENTIMENT_AVAILABLE else 0.0
+
         # cur_price 기반 피처가 필요하다면 여기서 추가 가능(현재는 ret_1d/ma 비율로 대체)
         _ = cur_price
-        return [f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13]
+        return [f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14]
 
     def _ai_proba_up(self, code: str, cur_price: float) -> Optional[float]:
         if self.ai_model is None:
@@ -4542,6 +4560,37 @@ class TradingEngine:
         )
         self._daily_report_done_date = now.date()
 
+    def _maybe_prefetch_news(self) -> None:
+        """30분마다 보유·관심 종목 뉴스를 백그라운드 스레드로 미리 가져온다."""
+        if not NEWS_SENTIMENT_AVAILABLE:
+            return
+        NEWS_PREFETCH_INTERVAL_SEC = 1800.0  # 30분
+        now = datetime.datetime.now()
+        if self._last_news_prefetch_at is not None:
+            if (now - self._last_news_prefetch_at).total_seconds() < NEWS_PREFETCH_INTERVAL_SEC:
+                return
+        # 이전 스레드가 아직 돌고 있으면 건너뜀
+        if self._news_prefetch_thread is not None and self._news_prefetch_thread.is_alive():
+            return
+
+        codes = list(dict.fromkeys(
+            list(self.stock_codes or []) + list((self.positions or {}).keys())
+        ))
+        if not codes:
+            return
+
+        self._last_news_prefetch_at = now
+
+        def _run() -> None:
+            try:
+                prefetch_news_batch(codes)
+                self._emit_log(f"[NEWS] 뉴스 감성 갱신 완료: {_news_cache_summary()}")
+            except Exception as e:
+                self._emit_log(f"[NEWS] prefetch 오류: {e}")
+
+        self._news_prefetch_thread = threading.Thread(target=_run, daemon=True)
+        self._news_prefetch_thread.start()
+
     def _maybe_periodic_holdings_sync(self) -> None:
         """60초마다 또는 체결 직후 플래그 세팅 시 잔고 TR을 자동 갱신한다."""
         HOLDINGS_SYNC_INTERVAL_SEC = 60.0
@@ -4585,6 +4634,7 @@ class TradingEngine:
             sm.schedule_reevaluation(self.stock_codes)
 
         self._maybe_periodic_holdings_sync()
+        self._maybe_prefetch_news()
 
         # AI 모델은 하루 1회만(시장 상황에 따라 바꾸고 싶으면 여기 튜닝)
         if AI_AVAILABLE and self.ai_model is None and self.ai_trained_date != today:
