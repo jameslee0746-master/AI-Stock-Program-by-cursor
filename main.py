@@ -2254,6 +2254,7 @@ class TradingEngine:
         self._last_ma_refresh_date: Optional[datetime.date] = None
         self._need_portfolio_sync = True
         self._last_periodic_holdings_sync_at: Optional[datetime.datetime] = None
+        self._last_reconcile_sync_at: Optional[datetime.datetime] = None
         self._last_positions_sync_warn_at: Optional[datetime.datetime] = None
         self._last_news_prefetch_at: Optional[datetime.datetime] = None
         self._news_prefetch_thread: Optional[threading.Thread] = None
@@ -4354,6 +4355,15 @@ class TradingEngine:
         """
         if not self.pending_orders:
             return
+        # TR 과호출 방지: 최소 10초 간격으로만 sync_portfolio 호출
+        RECONCILE_SYNC_INTERVAL_SEC = 10.0
+        now_r = datetime.datetime.now()
+        if (
+            self._last_reconcile_sync_at is not None
+            and (now_r - self._last_reconcile_sync_at).total_seconds() < RECONCILE_SYNC_INTERVAL_SEC
+        ):
+            return
+        self._last_reconcile_sync_at = now_r
         try:
             self.sync_portfolio(password=self._account_password if hasattr(self, "_account_password") else "")
         except Exception:
