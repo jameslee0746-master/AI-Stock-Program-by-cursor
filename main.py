@@ -4737,7 +4737,8 @@ class TradingEngine:
         """
         서버 연결이 끊겼을 때 자동으로 CommConnect()를 재호출한다.
         - 키움 HTS 자동 로그인이 설정된 경우에만 동작.
-        - 30초에 1회, 최대 10회까지 시도하며 성공 시 카운터 초기화.
+        - 30초에 1회, 최대 10회까지 시도.
+        - CommConnect() 후 sleep 없이 다음 tick에서 연결 복구 여부 확인.
         """
         RECONNECT_COOLDOWN_SEC = 30.0
         RECONNECT_MAX_ATTEMPTS = 10
@@ -4748,11 +4749,18 @@ class TradingEngine:
             state = 0
 
         if state == 1:
-            # 연결 정상 — 재연결 카운터 초기화
+            # 연결 정상 — CommConnect 직후 복구된 경우 잔고·실시간 재등록
             if self._reconnect_attempt_count > 0:
-                self._emit_log("[RECONNECT] 서버 연결 복구 확인 — 카운터 초기화")
+                self._emit_log("[RECONNECT] 서버 연결 복구 확인 — 잔고·실시간 재등록 중")
+                self.connected_at = datetime.datetime.now()
                 self._reconnect_attempt_count = 0
                 self._last_reconnect_attempt_at = None
+                self._need_portfolio_sync = True  # 다음 tick에서 잔고 갱신
+                try:
+                    if self.stock_codes:
+                        self.kiwoom.set_real_reg(self.stock_codes, fid_list="10")
+                except Exception:
+                    pass
             return
 
         # 연결 끊김
@@ -4768,47 +4776,27 @@ class TradingEngine:
         if self._last_reconnect_attempt_at is not None:
             elapsed = (now - self._last_reconnect_attempt_at).total_seconds()
             if elapsed < RECONNECT_COOLDOWN_SEC:
+                # 쿨다운 중 — 몇 초 남았는지 10초마다 한 번씩 로그
+                remain = int(RECONNECT_COOLDOWN_SEC - elapsed)
+                if remain % 10 == 0 and remain != int(RECONNECT_COOLDOWN_SEC):
+                    self._emit_log(
+                        f"[RECONNECT] 재연결 대기 중... {remain}초 후 재시도 "
+                        f"({self._reconnect_attempt_count}/{RECONNECT_MAX_ATTEMPTS}회 시도됨)"
+                    )
                 return
 
         self._reconnect_attempt_count += 1
         self._last_reconnect_attempt_at = now
         self._emit_log(
-            f"[RECONNECT] 서버 연결 끊김 감지 — 재연결 시도 {self._reconnect_attempt_count}/{RECONNECT_MAX_ATTEMPTS}"
+            f"[RECONNECT] 서버 연결 끊김 감지 — CommConnect() 호출 "
+            f"(시도 {self._reconnect_attempt_count}/{RECONNECT_MAX_ATTEMPTS})"
         )
         try:
+            # Qt 이벤트 루프를 막지 않도록 CommConnect만 호출하고 반환.
+            # 연결 복구 여부는 다음 on_tick(2초 후)에서 GetConnectState()로 확인.
             self.kiwoom.dynamicCall("CommConnect()")
         except Exception as e:
             self._emit_log(f"[RECONNECT] CommConnect 호출 오류: {e}")
-            return
-
-        # 재연결 후 잔고·실시간 재등록
-        import time as _time
-        _time.sleep(3)
-        try:
-            state_after = int(self.kiwoom.dynamicCall("GetConnectState()") or 0)
-        except Exception:
-            state_after = 0
-
-        if state_after == 1:
-            self.connected_at = datetime.datetime.now()
-            self._reconnect_attempt_count = 0
-            self._last_reconnect_attempt_at = None
-            self._emit_log("[RECONNECT] 재연결 성공 — 잔고·실시간 재등록 중")
-            try:
-                self.sync_portfolio(
-                    password=self._account_password if hasattr(self, "_account_password") else ""
-                )
-            except Exception:
-                pass
-            try:
-                if self.stock_codes:
-                    self.kiwoom.set_real_reg(self.stock_codes, fid_list="10")
-            except Exception:
-                pass
-        else:
-            self._emit_log(
-                f"[RECONNECT] 재연결 후에도 연결 미확인 (시도 {self._reconnect_attempt_count}회)"
-            )
 
 
 def attach_trade_logging(engine: TradingEngine, tracker: TradeTracker) -> None:
