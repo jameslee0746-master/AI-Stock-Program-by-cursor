@@ -2178,6 +2178,7 @@ class TradingEngine:
         self.last_keepalive_at: Optional[datetime.datetime] = None
         self._last_reconnect_attempt_at: Optional[datetime.datetime] = None
         self._reconnect_attempt_count: int = 0
+        self._disconnected_at: Optional[datetime.datetime] = None  # 끊김 최초 감지 시각
         self.on_log = None  # type: ignore
 
         # 실시간 가격
@@ -4755,6 +4756,7 @@ class TradingEngine:
                 self.connected_at = datetime.datetime.now()
                 self._reconnect_attempt_count = 0
                 self._last_reconnect_attempt_at = None
+                self._disconnected_at = None
                 self._need_portfolio_sync = True  # 다음 tick에서 잔고 갱신
                 try:
                     if self.stock_codes:
@@ -4765,6 +4767,12 @@ class TradingEngine:
 
         # 연결 끊김
         now = datetime.datetime.now()
+        if self._disconnected_at is None:
+            self._disconnected_at = now
+            self._emit_log(
+                f"[RECONNECT] 서버 연결 끊김 최초 감지 ({now.strftime('%H:%M:%S')}) — "
+                f"GetConnectState={state}"
+            )
         if self._reconnect_attempt_count >= RECONNECT_MAX_ATTEMPTS:
             if self._reconnect_attempt_count == RECONNECT_MAX_ATTEMPTS:
                 self._emit_log(
@@ -5724,14 +5732,34 @@ class TradingWindow(QMainWindow):
             if self.kiwoom is not None:
                 try:
                     st = int(self.kiwoom.dynamicCall("GetConnectState()") or 0)
-                    self.lbl_server.setText("서버상태: 연결됨" if st == 1 else "서버상태: 끊김")
+                    if st == 1:
+                        self.lbl_server.setText("서버상태: 연결됨")
+                        self.lbl_server.setStyleSheet("color: green; font-weight: bold;")
+                        elapsed = int((datetime.datetime.now() - self.engine.connected_at).total_seconds())
+                        hh = elapsed // 3600
+                        mm = (elapsed % 3600) // 60
+                        ss = elapsed % 60
+                        self.lbl_conn_time.setText(f"서버연결시간: {hh:02d}:{mm:02d}:{ss:02d}")
+                        self.lbl_conn_time.setStyleSheet("")
+                    else:
+                        self.lbl_server.setText("서버상태: 끊김 ⚠")
+                        self.lbl_server.setStyleSheet("color: red; font-weight: bold;")
+                        # 끊긴 시간 표시
+                        disc_at = getattr(self.engine, "_disconnected_at", None)
+                        if disc_at is not None:
+                            disc_sec = int((datetime.datetime.now() - disc_at).total_seconds())
+                            dm = disc_sec // 60
+                            ds = disc_sec % 60
+                            attempts = self.engine._reconnect_attempt_count
+                            self.lbl_conn_time.setText(
+                                f"끊김 경과: {dm:02d}분{ds:02d}초 (재시도 {attempts}회)"
+                            )
+                        else:
+                            self.lbl_conn_time.setText("서버연결시간: 끊김")
+                        self.lbl_conn_time.setStyleSheet("color: red;")
                 except Exception:
                     self.lbl_server.setText("서버상태: 확인실패")
-            elapsed = int((datetime.datetime.now() - self.engine.connected_at).total_seconds())
-            hh = elapsed // 3600
-            mm = (elapsed % 3600) // 60
-            ss = elapsed % 60
-            self.lbl_conn_time.setText(f"서버연결시간: {hh:02d}:{mm:02d}:{ss:02d}")
+                    self.lbl_server.setStyleSheet("color: orange;")
             if self.engine.maybe_keepalive():
                 t = (
                     self.engine.last_keepalive_at.strftime("%H:%M:%S")
