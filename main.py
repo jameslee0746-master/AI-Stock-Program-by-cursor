@@ -2176,9 +2176,7 @@ class TradingEngine:
         self.stock_codes = stock_codes
         self.connected_at = datetime.datetime.now()
         self.last_keepalive_at: Optional[datetime.datetime] = None
-        self._last_reconnect_attempt_at: Optional[datetime.datetime] = None
-        self._reconnect_attempt_count: int = 0
-        self._disconnected_at: Optional[datetime.datetime] = None  # 끊김 최초 감지 시각
+        self._disconnected_at: Optional[datetime.datetime] = None  # 끊김 최초 감지 시각 (UI용)
         self.on_log = None  # type: ignore
 
         # 실시간 가격
@@ -4614,8 +4612,16 @@ class TradingEngine:
         today = datetime.date.today()
         self._maybe_reset_daily_state(today)
 
-        # 서버 연결 끊김 감지 및 자동 재연결 (장중/장외 무관)
-        self._maybe_auto_reconnect()
+        # 연결 끊김 시각 추적 (UI 표시용 — 재연결 시도 없음, 앱 재시작으로 처리)
+        try:
+            st = int(self.kiwoom.dynamicCall("GetConnectState()") or 0)
+        except Exception:
+            st = 0
+        if st == 0:
+            if self._disconnected_at is None:
+                self._disconnected_at = datetime.datetime.now()
+        else:
+            self._disconnected_at = None
 
         if not self._is_market_open():
             self._sync_holding_current_prices(interval_sec=30.0)
@@ -4733,94 +4739,6 @@ class TradingEngine:
             return True
         except Exception:
             return False
-
-    def _maybe_auto_reconnect(self) -> None:
-        """
-        서버 연결 끊김 감지 및 복구 처리.
-
-        전략:
-        - Kiwoom HTS는 연결 끊김 시 자체적으로 자동 재접속을 시도한다.
-        - OpenAPI OCX의 GetConnectState()가 1로 돌아오면 복구된 것이다.
-        - CommConnect()를 반복 호출하면 HTS 자동 재접속을 방해할 수 있으므로
-          처음 5분은 HTS 자동 재접속을 기다리며 폴링만 한다.
-        - 5분 경과 후에도 복구되지 않으면 CommConnect()를 1회 시도한다.
-        - 이후에도 복구 안 되면 수동 재시작을 안내한다.
-        """
-        HTS_WAIT_SEC = 300.0        # HTS 자동 재접속 대기 시간 (5분)
-        COMMCONNECT_COOLDOWN_SEC = 60.0  # CommConnect 재시도 간격
-        COMMCONNECT_MAX = 3         # CommConnect 최대 시도 횟수
-
-        try:
-            state = int(self.kiwoom.dynamicCall("GetConnectState()") or 0)
-        except Exception:
-            state = 0
-
-        if state == 1:
-            # 연결 복구 확인
-            if self._disconnected_at is not None:
-                disc_sec = int((datetime.datetime.now() - self._disconnected_at).total_seconds())
-                self._emit_log(
-                    f"[RECONNECT] 서버 연결 복구! (끊김 후 {disc_sec}초 경과) — "
-                    f"잔고·실시간 재등록 중"
-                )
-                self.connected_at = datetime.datetime.now()
-                self._disconnected_at = None
-                self._reconnect_attempt_count = 0
-                self._last_reconnect_attempt_at = None
-                self._need_portfolio_sync = True
-                try:
-                    if self.stock_codes:
-                        self.kiwoom.set_real_reg(self.stock_codes, fid_list="10")
-                except Exception:
-                    pass
-            return
-
-        # 연결 끊김 처리
-        now = datetime.datetime.now()
-        if self._disconnected_at is None:
-            self._disconnected_at = now
-            self._emit_log(
-                f"[RECONNECT] 서버 연결 끊김 감지 ({now.strftime('%H:%M:%S')}) — "
-                f"HTS 자동 재접속 대기 중 (최대 {int(HTS_WAIT_SEC//60)}분)"
-            )
-            return
-
-        disc_elapsed = (now - self._disconnected_at).total_seconds()
-
-        # 5분 미만: HTS가 자동으로 재접속하도록 기다림 (30초마다 상태 로그)
-        if disc_elapsed < HTS_WAIT_SEC:
-            if int(disc_elapsed) % 30 == 0 and int(disc_elapsed) > 0:
-                self._emit_log(
-                    f"[RECONNECT] HTS 자동 재접속 대기 중... "
-                    f"{int(disc_elapsed)}초 경과 / {int(HTS_WAIT_SEC)}초 후 강제 시도"
-                )
-            return
-
-        # 5분 경과 후: CommConnect() 직접 호출 시도
-        if self._reconnect_attempt_count >= COMMCONNECT_MAX:
-            if self._reconnect_attempt_count == COMMCONNECT_MAX:
-                self._emit_log(
-                    f"[RECONNECT] CommConnect {COMMCONNECT_MAX}회 시도 모두 실패 — "
-                    f"앱을 수동으로 재시작해 주세요."
-                )
-                self._reconnect_attempt_count += 1
-            return
-
-        if self._last_reconnect_attempt_at is not None:
-            if (now - self._last_reconnect_attempt_at).total_seconds() < COMMCONNECT_COOLDOWN_SEC:
-                return
-
-        self._reconnect_attempt_count += 1
-        self._last_reconnect_attempt_at = now
-        self._emit_log(
-            f"[RECONNECT] HTS 자동 재접속 미완료 — CommConnect() 강제 호출 "
-            f"(시도 {self._reconnect_attempt_count}/{COMMCONNECT_MAX})"
-        )
-        try:
-            self.kiwoom.dynamicCall("CommConnect()")
-        except Exception as e:
-            self._emit_log(f"[RECONNECT] CommConnect 호출 오류: {e}")
-
 
 def attach_trade_logging(engine: TradingEngine, tracker: TradeTracker) -> None:
     """체결 알림 → TradeTracker.append (CSV 자동 저장)."""
@@ -5759,18 +5677,15 @@ class TradingWindow(QMainWindow):
                     else:
                         self.lbl_server.setText("서버상태: 끊김 ⚠")
                         self.lbl_server.setStyleSheet("color: red; font-weight: bold;")
-                        # 끊긴 시간 표시
+                        # 끊긴 경과 시간 표시
                         disc_at = getattr(self.engine, "_disconnected_at", None)
                         if disc_at is not None:
                             disc_sec = int((datetime.datetime.now() - disc_at).total_seconds())
                             dm = disc_sec // 60
                             ds = disc_sec % 60
-                            attempts = self.engine._reconnect_attempt_count
-                            self.lbl_conn_time.setText(
-                                f"끊김 경과: {dm:02d}분{ds:02d}초 (재시도 {attempts}회)"
-                            )
+                            self.lbl_conn_time.setText(f"끊김 경과: {dm:02d}분{ds:02d}초 — 앱 재시작 필요")
                         else:
-                            self.lbl_conn_time.setText("서버연결시간: 끊김")
+                            self.lbl_conn_time.setText("서버연결시간: 끊김 — 앱 재시작 필요")
                         self.lbl_conn_time.setStyleSheet("color: red;")
                 except Exception:
                     self.lbl_server.setText("서버상태: 확인실패")
