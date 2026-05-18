@@ -186,7 +186,7 @@ AI_TECH_STRATEGY_ENTRY_DELTA = float(os.environ.get("AI_TECH_STRATEGY_ENTRY_DELT
 AI_TECH_STRATEGY_ENTRY_FLOOR = float(os.environ.get("AI_TECH_STRATEGY_ENTRY_FLOOR", "0.38"))
 
 # 실전 손실 제어: 매도 사유 기록, 손절 후 재진입 제한, 약세장/연속손실 매수 축소
-STOP_LOSS_REENTRY_COOLDOWN_SEC = 4 * 3600
+STOP_LOSS_REENTRY_COOLDOWN_SEC = 30 * 60  # 30분 (was 4시간 — 당일 반등 재매수 허용)
 RECENT_LOSS_LOOKBACK_DAYS = 7
 RECENT_LOSS_BLOCK_COUNT = 2
 RECENT_LOSS_BLOCK_DAYS = 3
@@ -3716,10 +3716,7 @@ class TradingEngine:
         if float(cur) > float(MAX_ENTRY_PRICE):
             self._log_buy_block(code, f"매수가격 상한 초과({int(cur)}>{int(MAX_ENTRY_PRICE)})")
             return False
-        today = datetime.date.today()
-        if self.last_buy_date.get(code) == today:
-            self._log_buy_block(code, "당일 재매수 제한")
-            return False
+        # 당일 재매수 허용 — 손절 후 반등 시 재진입 가능 (쿨다운은 STOP_LOSS_REENTRY_COOLDOWN_SEC로 제어)
         if not self.ma.get(code):
             self._log_buy_block(code, "MA 데이터 없음")
             return False
