@@ -113,8 +113,8 @@ STOCK_CODES: List[str] = []
 ORDER_QTY_PER_STOCK = 1
 
 # 리스크 관리 비율 (종목당 비중 제한 + 수익폭 확대)
-STOP_LOSS_PCT = -0.015  # -1.5%
-TAKE_PROFIT_PCT = 0.045  # +4.5%
+STOP_LOSS_PCT = -0.030  # -3.0%  (was -1.5% — 손절 완화)
+TAKE_PROFIT_PCT = 0.060  # +6.0%  (was +4.5% — 익절 목표 상향)
 
 # 매수/매도는 시장가로 단순화(실전에서는 지정가/체결전략 고려)
 ORDER_TYPE_BUY = 1   # 신규매수
@@ -225,11 +225,11 @@ AUTO_BT_SCORE_WEIGHT = 6.0
 
 # AI 기반 매도(조기 청산/트레일링 보조) 파라미터
 # proba_up < AI_PROBA_EXIT_MAX 일 때 조기청산 → 값을 낮추면 더 ‘베어리시’해야 매도(보유 연장)
-AI_PROBA_EXIT_MAX = 0.42
-AI_EARLY_EXIT_MIN_PROFIT_PCT = 0.02  # +2%부터 AI 조기청산 허용
-AI_LOSS_EXIT_MIN_LOSS_PCT = -0.008  # -0.8% 이하부터 AI 손실구간 조기청산 허용
-AI_EARLY_EXIT_COOL_PCT = 0.01  # 조기 청산 후 바로 재진입 방지용(간단히 내부 상태로 활용 가능)
-AI_EXIT_MIN_HOLD_SEC = 180  # 매수 직후 AI 신호만으로 바로 매도되는 것 방지
+AI_PROBA_EXIT_MAX = 0.38            # was 0.42 — AI 매도 문턱 강화(더 확실한 하락 신호만 반응)
+AI_EARLY_EXIT_MIN_PROFIT_PCT = 0.035  # was 0.02 — +3.5%부터 AI 조기익절 허용 (was +2%)
+AI_LOSS_EXIT_MIN_LOSS_PCT = -0.020  # was -0.008 — -2.0% 이하부터 AI 손실청산 허용 (was -0.8%)
+AI_EARLY_EXIT_COOL_PCT = 0.01
+AI_EXIT_MIN_HOLD_SEC = 1800  # was 180 — 매수 후 최소 30분 보유 후에만 AI 매도 허용 (was 3분)
 BACKTEST_LOOKBACK_BARS = 60
 AI_FEATURE_NAMES = [
     "ma_gap_now",
