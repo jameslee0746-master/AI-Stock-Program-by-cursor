@@ -212,6 +212,21 @@ SCALE_IN_ENABLED = True
 SCALE_IN_MIN_PROFIT_PCT = 0.018
 SCALE_IN_MAX_POSITION_BUDGET_FACTOR = 0.75
 MARKET_WEAK_EXIT_LOSS_PCT = -0.005
+# 장 시작 직후(갭·급변동) 신규 매수 금지 분 — 018880 갭 손절 사례 대응
+MARKET_OPEN_BUY_GUARD_MINUTES = int(os.environ.get("MARKET_OPEN_BUY_GUARD_MINUTES", "15"))
+# 매수 차단 사유 요약 로그 주기(초)
+BUY_DIAG_INTERVAL_SEC = float(os.environ.get("BUY_DIAG_INTERVAL_SEC", "300"))
+# 당일 매수 0건 + 하락/횡보 국면 + 장중 2시간 경과 시 진입 문턱 소폭 완화
+NO_TRADE_RELAX_AFTER_HOUR = int(os.environ.get("NO_TRADE_RELAX_AFTER_HOUR", "11"))
+NO_TRADE_RELAX_AI_DELTA = float(os.environ.get("NO_TRADE_RELAX_AI_DELTA", "-0.04"))
+NO_TRADE_RELAX_SCORE_DELTA = float(os.environ.get("NO_TRADE_RELAX_SCORE_DELTA", "-0.05"))
+# 하락/횡보장에서 엔진 진입 규칙을 volume(완화 필터)으로 고정
+REGIME_OVERRIDE_STRATEGY = os.environ.get("REGIME_OVERRIDE_STRATEGY", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+)
 AUTO_BACKTEST_GATE_ENABLED = True
 AUTO_BACKTEST_CACHE_SEC = 30 * 60
 AUTO_BACKTEST_MAX_CODES = 80
@@ -2261,6 +2276,9 @@ class TradingEngine:
         self.last_holdings_tr_rows: int = 0
         self._last_holdings_brief: str = ""
         self._last_buy_block_reason_at: Dict[str, datetime.datetime] = {}
+        self._buy_block_stats: Dict[str, int] = {}
+        self._buy_block_stats_date: Optional[datetime.date] = None
+        self._last_buy_diag_at: Optional[datetime.datetime] = None
         self._last_holdings_price_sync_at: Optional[datetime.datetime] = None
         self._last_holdings_price_brief: str = ""
         self._last_reconcile_issue_sig: str = ""
@@ -2290,9 +2308,18 @@ class TradingEngine:
             return False
         return c in self._quality_mcap_allowlist
 
+    def _market_regime_label(self) -> str:
+        sm = self.strategy_manager
+        regime = getattr(sm, "last_market_regime", None) if sm is not None else None
+        return str(getattr(regime, "label", "") or "").lower()
+
     def _effective_buy_strategy_id(self, code: str) -> str:
         if self._use_quality_dip_for_code(code):
             return STRATEGY_QUALITY_DIP
+        if bool(REGIME_OVERRIDE_STRATEGY):
+            label = self._market_regime_label()
+            if label in ("bear", "range"):
+                return STRATEGY_VOLUME
         sm = self.strategy_manager
         return sm.active_strategy_id if sm is not None else STRATEGY_AI
 
@@ -2359,6 +2386,12 @@ class TradingEngine:
     def _log_buy_block(self, code: str, reason: str, interval_sec: float = 120.0) -> None:
         """매수 차단 사유 로그(종목+사유 단위로 주기 제한)."""
         now = datetime.datetime.now()
+        today = datetime.date.today()
+        if self._buy_block_stats_date != today:
+            self._buy_block_stats.clear()
+            self._buy_block_stats_date = today
+        cat = str(reason).split("(")[0].strip()[:48] or "기타"
+        self._buy_block_stats[cat] = int(self._buy_block_stats.get(cat, 0)) + 1
         key = f"{code}|{reason}"
         last = self._last_buy_block_reason_at.get(key)
         if last is not None and (now - last).total_seconds() < float(interval_sec):
@@ -2630,9 +2663,52 @@ class TradingEngine:
         return count
 
     def _is_market_weak(self) -> bool:
-        sm = self.strategy_manager
-        regime = getattr(sm, "last_market_regime", None) if sm is not None else None
-        return str(getattr(regime, "label", "") or "").lower() == "bear"
+        return self._market_regime_label() == "bear"
+
+    def _in_market_open_buy_guard(self) -> bool:
+        """09:00~09:XX 신규 매수 금지(갭·시초 변동성). guard_min=15 → 9:15부터 허용."""
+        guard_min = max(0, int(MARKET_OPEN_BUY_GUARD_MINUTES))
+        if guard_min <= 0 or self.market_session_name() != "정규장":
+            return False
+        now = QTime.currentTime()
+        if now.hour() != 9 or now < QTime(9, 0, 0):
+            return False
+        return (now.hour() * 60 + now.minute()) < (9 * 60 + guard_min)
+
+    def _today_had_buy(self) -> bool:
+        today = datetime.date.today()
+        if any(d == today for d in (self.last_buy_date or {}).values()):
+            return True
+        tracker = getattr(self, "trade_tracker", None)
+        if tracker is None:
+            return False
+        try:
+            for r in list(getattr(tracker, "records", []) or []):
+                if str(getattr(r, "side", "")).upper() != "BUY":
+                    continue
+                ts = getattr(r, "ts", None)
+                if isinstance(ts, datetime.datetime) and ts.date() == today:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _no_trade_relax_active(self) -> bool:
+        """당일 무매수·약세/횡보·장중 N시 이후 진입 문턱 완화."""
+        if not self._is_market_open() or self._today_had_buy():
+            return False
+        if self._market_regime_label() not in ("bear", "range"):
+            return False
+        now = datetime.datetime.now()
+        if now.hour < int(NO_TRADE_RELAX_AFTER_HOUR):
+            return False
+        return True
+
+    def _effective_buy_score_min(self) -> float:
+        base = float(BUY_SCORE_MIN)
+        if self._no_trade_relax_active():
+            return max(0.10, base + float(NO_TRADE_RELAX_SCORE_DELTA))
+        return base
 
     def _today_realized_pnl_pct(self) -> float:
         tracker = getattr(self, "trade_tracker", None)
@@ -2713,6 +2789,8 @@ class TradingEngine:
             bt_mode = str(self._auto_bt_state.get("mode", "neutral"))
         if bt_mode == "caution":
             threshold += float(AUTO_BT_CAUTION_AI_ENTRY_ADD)
+        if self._no_trade_relax_active():
+            threshold += float(NO_TRADE_RELAX_AI_DELTA)
         return min(0.80, max(0.0, threshold))
 
     def _auto_bt_mode(self) -> str:
@@ -2792,7 +2870,7 @@ class TradingEngine:
                 if not self._should_buy(code):
                     continue
                 score = self._buy_score(code)
-                if score >= float(BUY_SCORE_MIN):
+                if score >= self._effective_buy_score_min():
                     ranked.append((score, code))
             except Exception:
                 continue
@@ -3659,7 +3737,47 @@ class TradingEngine:
             self._emit_log(f"[PRICE] 보유 현재가 키움TR 보정 {brief}{extra}")
             self._last_holdings_price_brief = brief
 
+    def _maybe_emit_buy_diagnostics(self) -> None:
+        """장중 주기적으로 매수 후보·차단 사유·국면 요약."""
+        if not self._is_market_open():
+            return
+        now = datetime.datetime.now()
+        if (
+            self._last_buy_diag_at is not None
+            and (now - self._last_buy_diag_at).total_seconds() < float(BUY_DIAG_INTERVAL_SEC)
+        ):
+            return
+        self._last_buy_diag_at = now
+        n_targets = len(list(self.stock_codes or []))
+        n_ma = sum(1 for c in (self.stock_codes or []) if bool(self.ma.get(c)))
+        candidates = self._ranked_buy_candidates()
+        regime = self._market_regime_label() or "-"
+        sm = self.strategy_manager
+        active = getattr(sm, "active_strategy_id", "-") if sm is not None else "-"
+        relax = "ON" if self._no_trade_relax_active() else "off"
+        guard = "ON" if self._in_market_open_buy_guard() else "off"
+        top_blocks = sorted(
+            self._buy_block_stats.items(), key=lambda x: x[1], reverse=True
+        )[:6]
+        block_txt = ", ".join(f"{k}:{v}" for k, v in top_blocks) if top_blocks else "없음"
+        self._emit_log(
+            f"[BUY-DIAG] 대상 {n_targets}종 MA준비 {n_ma} | 후보 {len(candidates)} | "
+            f"시장={regime} 활성전략={active} 진입규칙={self._effective_buy_strategy_id('')} | "
+            f"AI문턱={self._dynamic_ai_entry_min():.2f} score≥{self._effective_buy_score_min():.2f} | "
+            f"완화={relax} 장초금지={guard} | 차단상위: {block_txt}"
+        )
+        if candidates:
+            preview = ", ".join(f"{c}({s:.2f})" for s, c in candidates[:3])
+            self._emit_log(f"[BUY-DIAG] 상위후보: {preview}")
+
     def _should_buy_common(self, code: str) -> bool:
+        if self._in_market_open_buy_guard():
+            self._log_buy_block(
+                code,
+                f"장초 변동성 구간 매수금지(09:00~09:{int(MARKET_OPEN_BUY_GUARD_MINUTES):02d})",
+                interval_sec=300.0,
+            )
+            return False
         if code in self.positions and self.positions[code].get("qty", 0) > 0:
             self._log_buy_block(code, "이미 보유중")
             return False
@@ -4649,6 +4767,7 @@ class TradingEngine:
 
         self._maybe_periodic_holdings_sync()
         self._maybe_prefetch_news()
+        self._maybe_emit_buy_diagnostics()
 
         # AI 모델은 하루 1회만(시장 상황에 따라 바꾸고 싶으면 여기 튜닝)
         if AI_AVAILABLE and self.ai_model is None and self.ai_trained_date != today:

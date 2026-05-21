@@ -394,7 +394,7 @@ def _regime_score_bonus(regime_label: str, strategy_id: str) -> float:
     국면별 전략 점수 가산(소폭). RF/규칙 공통으로 쓰는 조정치.
 
     - 상승: 추세 추종(trend)·거래량 동반(volume)에 유리
-    - 하락: 보수적 복합(ai) 가중, 순추세 진입은 불리
+    - 하락: 거래량(volume) 가중, 순추세(trend)는 불리
     - 횡보: 변동성·거래량 이벤트(volume)에 상대적 가중
     """
     table: Dict[str, Dict[str, float]] = {
@@ -404,9 +404,9 @@ def _regime_score_bonus(regime_label: str, strategy_id: str) -> float:
             STRATEGY_AI: 0.08,
         },
         "bear": {
-            STRATEGY_TREND: -0.45,
-            STRATEGY_VOLUME: -0.30,
-            STRATEGY_AI: 0.50,
+            STRATEGY_TREND: -0.35,
+            STRATEGY_VOLUME: 0.45,
+            STRATEGY_AI: 0.10,
         },
         "range": {
             STRATEGY_TREND: -0.15,
