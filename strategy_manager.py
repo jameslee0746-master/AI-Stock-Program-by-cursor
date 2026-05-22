@@ -612,7 +612,7 @@ class StrategyManager:
             },
         )
 
-    def schedule_reevaluation(self, stock_codes: List[str]) -> None:
+    def schedule_reevaluation(self, stock_codes: List[str], force: bool = False) -> None:
         """시장 루프에서 호출. 주기·중복 실행 방지 후 백그라운드 평가."""
         codes = [str(c).strip() for c in (stock_codes or []) if str(c).strip()]
         if not codes:
@@ -621,7 +621,11 @@ class StrategyManager:
         with self._lock:
             if self._eval_thread_running:
                 return
-            if self._last_eval_ts > 0 and (now - self._last_eval_ts) < self.interval_sec:
+            if (
+                not force
+                and self._last_eval_ts > 0
+                and (now - self._last_eval_ts) < self.interval_sec
+            ):
                 return
             self._eval_thread_running = True
 

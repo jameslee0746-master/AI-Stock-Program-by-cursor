@@ -227,6 +227,15 @@ REGIME_OVERRIDE_STRATEGY = os.environ.get("REGIME_OVERRIDE_STRATEGY", "1").strip
     "yes",
     "y",
 )
+# volume 전략: MA20 대비 허용 하락폭 (ai 기본 -1.2%보다 완화)
+VOLUME_MA20_ENTRY_GAP_PCT = float(os.environ.get("VOLUME_MA20_ENTRY_GAP_PCT", "-0.04"))
+# 하락/횡보·국면 미평가 시 MA5<=MA20 이더라도 MA20 근처 반등 시 진입 허용
+VOLUME_WEAK_MA_ENTRY_ENABLED = os.environ.get("VOLUME_WEAK_MA_ENTRY_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+)
 AUTO_BACKTEST_GATE_ENABLED = True
 AUTO_BACKTEST_CACHE_SEC = 30 * 60
 AUTO_BACKTEST_MAX_CODES = 80
@@ -2279,6 +2288,7 @@ class TradingEngine:
         self._buy_block_stats: Dict[str, int] = {}
         self._buy_block_stats_date: Optional[datetime.date] = None
         self._last_buy_diag_at: Optional[datetime.datetime] = None
+        self._ai_model_missing_warned: bool = False
         self._last_holdings_price_sync_at: Optional[datetime.datetime] = None
         self._last_holdings_price_brief: str = ""
         self._last_reconcile_issue_sig: str = ""
@@ -2318,10 +2328,28 @@ class TradingEngine:
             return STRATEGY_QUALITY_DIP
         if bool(REGIME_OVERRIDE_STRATEGY):
             label = self._market_regime_label()
-            if label in ("bear", "range"):
+            # 국면 미평가(시장=-)도 하락장과 동일하게 volume 완화 규칙 적용
+            if label in ("bear", "range", ""):
                 return STRATEGY_VOLUME
         sm = self.strategy_manager
         return sm.active_strategy_id if sm is not None else STRATEGY_AI
+
+    def _is_weak_or_unknown_regime(self) -> bool:
+        return self._market_regime_label() in ("bear", "range", "")
+
+    def _allow_volume_weak_ma_entry(self, v: Dict[str, float], cur: float) -> bool:
+        """MA5<=MA20 이지만 MA20 근처에서 RSI 반등 시 volume 진입 허용."""
+        if not bool(VOLUME_WEAK_MA_ENTRY_ENABLED) or not self._is_weak_or_unknown_regime():
+            return False
+        ma20 = float(v.get("ma20", 0.0) or 0.0)
+        if ma20 <= 0:
+            return False
+        rel = cur / ma20 - 1.0
+        if rel < -0.04 or rel > float(QDIP_MAX_PRICE_ABOVE_MA20_PCT):
+            return False
+        rsi = float(v.get("rsi14", 0.0) or 0.0)
+        rsi_prev = float(v.get("rsi14_prev", rsi) or rsi)
+        return rsi > rsi_prev and rsi >= 28.0
 
     def scan_quality_ui_tag(self) -> str:
         if not QUALITY_DIP_ENABLED or not self._scan_quality_intent_active:
@@ -2386,16 +2414,16 @@ class TradingEngine:
     def _log_buy_block(self, code: str, reason: str, interval_sec: float = 120.0) -> None:
         """매수 차단 사유 로그(종목+사유 단위로 주기 제한)."""
         now = datetime.datetime.now()
+        key = f"{code}|{reason}"
+        last = self._last_buy_block_reason_at.get(key)
+        if last is not None and (now - last).total_seconds() < float(interval_sec):
+            return
         today = datetime.date.today()
         if self._buy_block_stats_date != today:
             self._buy_block_stats.clear()
             self._buy_block_stats_date = today
         cat = str(reason).split("(")[0].strip()[:48] or "기타"
         self._buy_block_stats[cat] = int(self._buy_block_stats.get(cat, 0)) + 1
-        key = f"{code}|{reason}"
-        last = self._last_buy_block_reason_at.get(key)
-        if last is not None and (now - last).total_seconds() < float(interval_sec):
-            return
         self._last_buy_block_reason_at[key] = now
         self._emit_log(f"[BUY-BLOCK] {code} {reason}")
 
@@ -2697,7 +2725,7 @@ class TradingEngine:
         """당일 무매수·약세/횡보·장중 N시 이후 진입 문턱 완화."""
         if not self._is_market_open() or self._today_had_buy():
             return False
-        if self._market_regime_label() not in ("bear", "range"):
+        if self._market_regime_label() == "bull":
             return False
         now = datetime.datetime.now()
         if now.hour < int(NO_TRADE_RELAX_AFTER_HOUR):
@@ -3751,18 +3779,21 @@ class TradingEngine:
         n_targets = len(list(self.stock_codes or []))
         n_ma = sum(1 for c in (self.stock_codes or []) if bool(self.ma.get(c)))
         candidates = self._ranked_buy_candidates()
-        regime = self._market_regime_label() or "-"
+        regime = self._market_regime_label() or "미평가"
         sm = self.strategy_manager
         active = getattr(sm, "active_strategy_id", "-") if sm is not None else "-"
+        sample = (self.stock_codes[0] if self.stock_codes else "")
+        entry_rule = self._effective_buy_strategy_id(sample) if sample else active
         relax = "ON" if self._no_trade_relax_active() else "off"
         guard = "ON" if self._in_market_open_buy_guard() else "off"
+        ai_tag = "학습됨" if self.ai_model is not None else "미학습(기술만)"
         top_blocks = sorted(
             self._buy_block_stats.items(), key=lambda x: x[1], reverse=True
         )[:6]
         block_txt = ", ".join(f"{k}:{v}" for k, v in top_blocks) if top_blocks else "없음"
         self._emit_log(
             f"[BUY-DIAG] 대상 {n_targets}종 MA준비 {n_ma} | 후보 {len(candidates)} | "
-            f"시장={regime} 활성전략={active} 진입규칙={self._effective_buy_strategy_id('')} | "
+            f"시장={regime} 활성전략={active} 진입규칙={entry_rule} AI={ai_tag} | "
             f"AI문턱={self._dynamic_ai_entry_min():.2f} score≥{self._effective_buy_score_min():.2f} | "
             f"완화={relax} 장초금지={guard} | 차단상위: {block_txt}"
         )
@@ -3858,8 +3889,10 @@ class TradingEngine:
 
     def _ai_buy_filter(self, code: str, cur: float) -> bool:
         if self.ai_model is None:
-            self._log_buy_block(code, "AI 모델 미학습", interval_sec=120.0)
-            return False
+            if not self._ai_model_missing_warned:
+                self._ai_model_missing_warned = True
+                self._emit_log("[AI] 모델 미학습 — 확률 필터 스킵, 기술적 조건만 적용")
+            return self._ai_buy_filter_soft(code, cur)
         x = self._ai_features_from_cached(code, cur)
         if x is None:
             return False
@@ -3939,14 +3972,17 @@ class TradingEngine:
                 return fail(f"(눌림) AI 확률 부족(thr={self._dynamic_ai_entry_min_soft():.2f})")
             return True
 
-        if cur < ma20 * (1.0 + MA20_ENTRY_GAP_PCT):
+        gap_pct = float(MA20_ENTRY_GAP_PCT)
+        if strategy_id == STRATEGY_VOLUME:
+            gap_pct = float(VOLUME_MA20_ENTRY_GAP_PCT)
+        if cur < ma20 * (1.0 + gap_pct):
             return fail("MA20 대비 너무 낮음")
         price_to_ma20 = cur / ma20 - 1.0 if ma20 > 0 else 0.0
         if price_to_ma20 > MAX_PRICE_TO_MA20_PCT:
             return fail("MA20 대비 과열")
 
         if strategy_id == STRATEGY_VOLUME:
-            if not (ma5 > ma20):
+            if not (ma5 > ma20) and not self._allow_volume_weak_ma_entry(v, cur):
                 return fail("MA5<=MA20")
             if rsi14 < (RSI_ENTRY_MIN - 3.0) or rsi14 > (RSI_ENTRY_MAX + 2.0):
                 return fail("RSI 범위 이탈")
@@ -3994,8 +4030,8 @@ class TradingEngine:
             return fail("거래량 평균비 부족")
         if vol_prev > 0 and vol_today < int(vol_prev * VOL_ENTRY_GROWTH_MIN):
             return fail("전일대비 거래량 부족")
-        if not self._ai_buy_filter(code, cur):
-            return fail("AI 상승확률 부족")
+        if not self._ai_buy_filter_soft(code, cur):
+            return fail(f"AI 상승확률 부족(thr={self._dynamic_ai_entry_min_soft():.2f})")
         return True
 
     def _should_buy(self, code: str) -> bool:
@@ -4763,7 +4799,8 @@ class TradingEngine:
 
         sm = self.strategy_manager
         if sm is not None and self.stock_codes:
-            sm.schedule_reevaluation(self.stock_codes)
+            force_eval = getattr(sm, "last_market_regime", None) is None
+            sm.schedule_reevaluation(self.stock_codes, force=force_eval)
 
         self._maybe_periodic_holdings_sync()
         self._maybe_prefetch_news()
