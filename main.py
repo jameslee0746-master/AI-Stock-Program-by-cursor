@@ -98,7 +98,9 @@ from strategy_manager import (
     STRATEGY_QUALITY_DIP,
     STRATEGY_TREND,
     STRATEGY_VOLUME,
+    analyze_market_regime,
 )
+from dataclasses import replace
 import ai_objective_shared as aos
 
 
@@ -236,6 +238,9 @@ VOLUME_WEAK_MA_ENTRY_ENABLED = os.environ.get("VOLUME_WEAK_MA_ENTRY_ENABLED", "1
     "yes",
     "y",
 )
+VOLUME_WEAK_MA20_ENTRY_GAP_PCT = float(os.environ.get("VOLUME_WEAK_MA20_ENTRY_GAP_PCT", "-0.06"))
+# 무거래 완화 시작 시각 (기본 10:30)
+NO_TRADE_RELAX_AFTER_TIME = os.environ.get("NO_TRADE_RELAX_AFTER_TIME", "10:30").strip()
 AUTO_BACKTEST_GATE_ENABLED = True
 AUTO_BACKTEST_CACHE_SEC = 30 * 60
 AUTO_BACKTEST_MAX_CODES = 80
@@ -2289,6 +2294,8 @@ class TradingEngine:
         self._buy_block_stats_date: Optional[datetime.date] = None
         self._last_buy_diag_at: Optional[datetime.datetime] = None
         self._ai_model_missing_warned: bool = False
+        self._strat_force_eval_done: bool = False
+        self._last_regime_fallback_at: Optional[datetime.datetime] = None
         self._last_holdings_price_sync_at: Optional[datetime.datetime] = None
         self._last_holdings_price_brief: str = ""
         self._last_reconcile_issue_sig: str = ""
@@ -2345,11 +2352,51 @@ class TradingEngine:
         if ma20 <= 0:
             return False
         rel = cur / ma20 - 1.0
-        if rel < -0.04 or rel > float(QDIP_MAX_PRICE_ABOVE_MA20_PCT):
+        if rel < float(VOLUME_WEAK_MA20_ENTRY_GAP_PCT) or rel > float(QDIP_MAX_PRICE_ABOVE_MA20_PCT):
             return False
         rsi = float(v.get("rsi14", 0.0) or 0.0)
         rsi_prev = float(v.get("rsi14_prev", rsi) or rsi)
         return rsi > rsi_prev and rsi >= 28.0
+
+    def _maybe_update_market_regime_from_kiwoom(self) -> None:
+        """yfinance 실패 시 키움 일봉 TR로 시장 국면만 산출."""
+        sm = self.strategy_manager
+        if sm is None or getattr(sm, "last_market_regime", None) is not None:
+            return
+        now = datetime.datetime.now()
+        if (
+            self._last_regime_fallback_at is not None
+            and (now - self._last_regime_fallback_at).total_seconds() < 600.0
+        ):
+            return
+        self._last_regime_fallback_at = now
+        today = datetime.date.today().strftime("%Y%m%d")
+        closes_list: List[List[float]] = []
+        for code in list(self.stock_codes or [])[:8]:
+            try:
+                ohlcv = self.kiwoom.request_daily_ohlcv(
+                    code, end_date_yyyymmdd=today, count=60
+                )
+                closes = list(ohlcv.get("closes", []) or [])
+                if len(closes) >= 25:
+                    closes_list.append(closes)
+            except Exception:
+                continue
+            if len(closes_list) >= 4:
+                break
+        if len(closes_list) < 2:
+            return
+        ln = min(len(c) for c in closes_list)
+        comp = [sum(c[-ln:][i] for c in closes_list) / len(closes_list) for i in range(ln)]
+        regime = replace(
+            analyze_market_regime(comp),
+            source=f"kiwoom:composite:{len(closes_list)}",
+        )
+        sm.last_market_regime = regime
+        self._emit_log(
+            f"[STRAT] 시장 국면(키움 TR) {regime.label_ko} "
+            f"R20={regime.ret_20d_pct:+.1f}% MA이격={regime.dist_ma20_pct:+.1f}%"
+        )
 
     def scan_quality_ui_tag(self) -> str:
         if not QUALITY_DIP_ENABLED or not self._scan_quality_intent_active:
@@ -2728,7 +2775,12 @@ class TradingEngine:
         if self._market_regime_label() == "bull":
             return False
         now = datetime.datetime.now()
-        if now.hour < int(NO_TRADE_RELAX_AFTER_HOUR):
+        try:
+            hh, mm = NO_TRADE_RELAX_AFTER_TIME.split(":", 1)
+            relax_after = datetime.time(int(hh), int(mm))
+        except Exception:
+            relax_after = datetime.time(int(NO_TRADE_RELAX_AFTER_HOUR), 0)
+        if now.time() < relax_after:
             return False
         return True
 
@@ -3928,6 +3980,40 @@ class TradingEngine:
         except Exception:
             return True
 
+    def _should_buy_volume_weak_regime(
+        self,
+        code: str,
+        v: Dict[str, float],
+        cur: float,
+        fail: Callable[[str], bool],
+    ) -> bool:
+        """
+        하락/횡보·국면 미평가 시 volume 완화 규칙.
+        RSI 상승 필수·MA5>MA20 필수를 완화해 후보 종목을 확보한다.
+        """
+        ma20 = float(v.get("ma20", 0.0) or 0.0)
+        if ma20 <= 0:
+            return fail("MA20 없음")
+        gap_pct = float(VOLUME_WEAK_MA20_ENTRY_GAP_PCT)
+        if cur < ma20 * (1.0 + gap_pct):
+            return fail("MA20 대비 너무 낮음")
+        price_to_ma20 = cur / ma20 - 1.0
+        if price_to_ma20 > max(float(MAX_PRICE_TO_MA20_PCT), 0.32):
+            return fail("MA20 대비 과열")
+        rsi14 = float(v.get("rsi14", 0.0) or 0.0)
+        if rsi14 < 26.0 or rsi14 > 76.0:
+            return fail("RSI 범위 이탈")
+        vol_ratio = float(v.get("vol_ratio", 0.0) or 0.0)
+        if vol_ratio < 0.70:
+            return fail("거래량 평균비 부족")
+        vol_today = int(v.get("vol_today", 0) or 0)
+        vol_prev = int(v.get("vol_prev", 0) or 0)
+        if vol_prev > 0 and vol_today < int(vol_prev * 0.88):
+            return fail("전일대비 거래량 부족")
+        if not self._ai_buy_filter_soft(code, cur):
+            return fail(f"AI 확률 부족(완화 thr={self._dynamic_ai_entry_min_soft():.2f})")
+        return True
+
     def _should_buy_for_strategy(
         self, code: str, v: Dict[str, float], cur: float, strategy_id: str
     ) -> bool:
@@ -3971,6 +4057,9 @@ class TradingEngine:
             if not self._ai_buy_filter_soft(code, cur):
                 return fail(f"(눌림) AI 확률 부족(thr={self._dynamic_ai_entry_min_soft():.2f})")
             return True
+
+        if strategy_id == STRATEGY_VOLUME and self._is_weak_or_unknown_regime():
+            return self._should_buy_volume_weak_regime(code, v, cur, fail)
 
         gap_pct = float(MA20_ENTRY_GAP_PCT)
         if strategy_id == STRATEGY_VOLUME:
@@ -4797,9 +4886,15 @@ class TradingEngine:
         self._maybe_refresh_ma_step()
         self._sync_holding_current_prices()
 
+        self._maybe_update_market_regime_from_kiwoom()
         sm = self.strategy_manager
         if sm is not None and self.stock_codes:
-            force_eval = getattr(sm, "last_market_regime", None) is None
+            force_eval = (
+                not self._strat_force_eval_done
+                and getattr(sm, "last_market_regime", None) is None
+            )
+            if force_eval:
+                self._strat_force_eval_done = True
             sm.schedule_reevaluation(self.stock_codes, force=force_eval)
 
         self._maybe_periodic_holdings_sync()

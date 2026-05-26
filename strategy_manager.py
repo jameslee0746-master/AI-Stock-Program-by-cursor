@@ -655,7 +655,16 @@ class StrategyManager:
                 loaded[code] = data
 
         if not loaded:
-            self._log("[STRAT] 유효 OHLCV 없음 — 성과 스냅샷·전략 변경 생략 (활성 전략 유지)")
+            bench = _load_benchmark_closes()
+            if bench is not None:
+                bc, desc = bench
+                self.last_market_regime = replace(analyze_market_regime(bc), source=desc)
+                self._log(
+                    f"[STRAT] 시장 {self.last_market_regime.label_ko} (지수만, yfinance) "
+                    f"R20={self.last_market_regime.ret_20d_pct:+.1f}%"
+                )
+            else:
+                self._log("[STRAT] 유효 OHLCV 없음 — 성과 스냅샷·전략 변경 생략 (활성 전략 유지)")
             return
 
         snapshots: Dict[str, StrategyRecord] = {}
