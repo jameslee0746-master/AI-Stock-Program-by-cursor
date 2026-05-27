@@ -333,11 +333,11 @@ QDIP_REQUIRE_MA5_GT_MA20 = os.environ.get("QDIP_REQUIRE_MA5_GT_MA20", "0").strip
 MIN_ENTRY_PRICE = 2000  # 매수 하한가(원)
 MAX_ENTRY_PRICE = 1_000_000  # 매수 상한가(원)
 BUDGET_BASED_ORDER_QTY = True  # 총예산/남은 슬롯 기준으로 주문수량 자동 계산
-MAX_POSITION_BUDGET_PCT = 0.12  # 한 종목 최대 투자비중(추정예탁자산 대비)
+MAX_POSITION_BUDGET_PCT = 0.20  # 한 종목 최대 투자비중(추정예탁자산 대비)  was 0.12
 ACTIVE_BUY_TARGET_LIMIT = 100  # 실매수 대상은 스캔 상위 N개로 압축
 ORDER_TIMEOUT_COOLDOWN_SEC = 600  # 매수 timeout 후 같은 종목 재주문 대기
 ORDER_TIMEOUT_LATE_FILL_GUARD_SEC = int(os.environ.get("ORDER_TIMEOUT_LATE_FILL_GUARD_SEC", "1800"))
-MAX_SINGLE_BUY_ORDER_KRW = float(os.environ.get("MAX_SINGLE_BUY_ORDER_KRW", "300000"))
+MAX_SINGLE_BUY_ORDER_KRW = float(os.environ.get("MAX_SINGLE_BUY_ORDER_KRW", "2000000"))  # was 300000
 # 진입 변동성 / 실행 리스크(전역 매수 간격·시간당 한도·ATR 게이트)
 # USE_ENTRY_ATR_GATE=1 이고 ENTRY_ATR_MAX_PCT>0 이면 ma[code].atr_pct 초과 시 신규 매수만 차단(스케일인은 buy_market만 타고 _should_buy_common은 안 탐)
 USE_ENTRY_ATR_GATE = os.environ.get("USE_ENTRY_ATR_GATE", "0").strip().lower() in ("1", "true", "yes", "y")
@@ -2335,7 +2335,10 @@ class TradingEngine:
             return STRATEGY_QUALITY_DIP
         if bool(REGIME_OVERRIDE_STRATEGY):
             label = self._market_regime_label()
-            # 국면 미평가(시장=-)도 하락장과 동일하게 volume 완화 규칙 적용
+            # 상승장: trend 전략(MA5>MA20 추세 추종, RSI 조건 완화)
+            if label == "bull":
+                return STRATEGY_TREND
+            # 하락/횡보/미평가: volume 완화 규칙
             if label in ("bear", "range", ""):
                 return STRATEGY_VOLUME
         sm = self.strategy_manager
@@ -4061,14 +4064,16 @@ class TradingEngine:
         if strategy_id == STRATEGY_VOLUME and self._is_weak_or_unknown_regime():
             return self._should_buy_volume_weak_regime(code, v, cur, fail)
 
-        gap_pct = float(MA20_ENTRY_GAP_PCT)
-        if strategy_id == STRATEGY_VOLUME:
-            gap_pct = float(VOLUME_MA20_ENTRY_GAP_PCT)
-        if cur < ma20 * (1.0 + gap_pct):
-            return fail("MA20 대비 너무 낮음")
-        price_to_ma20 = cur / ma20 - 1.0 if ma20 > 0 else 0.0
-        if price_to_ma20 > MAX_PRICE_TO_MA20_PCT:
-            return fail("MA20 대비 과열")
+        # trend는 뒤에서 자체 MA20 게이트 처리
+        if strategy_id not in (STRATEGY_TREND,):
+            gap_pct = float(MA20_ENTRY_GAP_PCT)
+            if strategy_id == STRATEGY_VOLUME:
+                gap_pct = float(VOLUME_MA20_ENTRY_GAP_PCT)
+            if cur < ma20 * (1.0 + gap_pct):
+                return fail("MA20 대비 너무 낮음")
+            price_to_ma20 = cur / ma20 - 1.0 if ma20 > 0 else 0.0
+            if price_to_ma20 > MAX_PRICE_TO_MA20_PCT:
+                return fail("MA20 대비 과열")
 
         if strategy_id == STRATEGY_VOLUME:
             if not (ma5 > ma20) and not self._allow_volume_weak_ma_entry(v, cur):
@@ -4090,17 +4095,19 @@ class TradingEngine:
             return True
 
         if strategy_id == STRATEGY_TREND:
-            if not (ma5 > ma20):
+            # 상승장 trend: MA20 허용 폭 완화(-3%), RSI 범위·상승폭 완화
+            if ma20 > 0 and cur < ma20 * (1.0 - 0.03):
+                return fail("MA20 대비 너무 낮음(trend:-3%)")
+            if not (ma5 > ma20) and not (cur >= ma20 * 0.98):
                 return fail("MA5<=MA20")
-            if rsi14 < RSI_ENTRY_MIN or rsi14 > RSI_ENTRY_MAX:
+            if rsi14 < (RSI_ENTRY_MIN - 5.0) or rsi14 > (RSI_ENTRY_MAX + 5.0):
                 return fail("RSI 범위 이탈")
-            if rsi14 <= rsi14_prev:
-                return fail("RSI 상승 아님")
-            if (rsi14 - rsi14_prev) < RSI_MIN_DELTA:
-                return fail("RSI 상승폭 부족")
-            if vol_ratio < (VOL_ENTRY_RATIO_MIN * 0.85):
+            # RSI 상승 방향 확인: 엄격 상승 or RSI≥50(이미 강세)이면 허용
+            if rsi14 < rsi14_prev and rsi14 < 50.0:
+                return fail("RSI 하락 중(강세 미충족)")
+            if vol_ratio < (VOL_ENTRY_RATIO_MIN * 0.75):
                 return fail("거래량 평균비 부족")
-            if vol_prev > 0 and vol_today < int(vol_prev * (VOL_ENTRY_GROWTH_MIN * 0.95)):
+            if vol_prev > 0 and vol_today < int(vol_prev * (VOL_ENTRY_GROWTH_MIN * 0.85)):
                 return fail("전일대비 거래량 부족")
             if not self._ai_buy_filter_soft(code, cur):
                 return fail(f"AI 상승확률 부족(트렌드·완화 thr={self._dynamic_ai_entry_min_soft():.2f})")
