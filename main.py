@@ -190,7 +190,7 @@ AI_TECH_STRATEGY_ENTRY_FLOOR = float(os.environ.get("AI_TECH_STRATEGY_ENTRY_FLOO
 # 실전 손실 제어: 매도 사유 기록, 손절 후 재진입 제한, 약세장/연속손실 매수 축소
 STOP_LOSS_REENTRY_COOLDOWN_SEC = 30 * 60  # 30분 (was 4시간 — 당일 반등 재매수 허용)
 RECENT_LOSS_LOOKBACK_DAYS = 7
-RECENT_LOSS_BLOCK_COUNT = 2
+RECENT_LOSS_BLOCK_COUNT = 5  # was 2: 7일내 2회 손절 시 차단 → 5회로 완화
 RECENT_LOSS_BLOCK_DAYS = 3
 MARKET_WEAK_MAX_CONCURRENT_POSITIONS = 3
 MARKET_WEAK_AI_ENTRY_ADD = 0.08
@@ -4095,20 +4095,17 @@ class TradingEngine:
             return True
 
         if strategy_id == STRATEGY_TREND:
-            # 상승장 trend: MA20 허용 폭 완화(-3%), RSI 범위·상승폭 완화
-            if ma20 > 0 and cur < ma20 * (1.0 - 0.03):
-                return fail("MA20 대비 너무 낮음(trend:-3%)")
-            if not (ma5 > ma20) and not (cur >= ma20 * 0.98):
-                return fail("MA5<=MA20")
-            if rsi14 < (RSI_ENTRY_MIN - 5.0) or rsi14 > (RSI_ENTRY_MAX + 5.0):
+            # 상승장 조정 국면: MA20 -10% 이상이면 허용 (대부분 종목이 MA20 아래)
+            if ma20 > 0 and cur < ma20 * (1.0 - 0.10):
+                return fail("MA20 대비 과도 하락(trend:-10%)")
+            # MA5<=MA20 조건 제거: 상승장 조정 시 MA5가 MA20 아래인 것은 정상
+            if rsi14 < (RSI_ENTRY_MIN - 8.0) or rsi14 > (RSI_ENTRY_MAX + 8.0):
                 return fail("RSI 범위 이탈")
-            # RSI 상승 방향 확인: 엄격 상승 or RSI≥50(이미 강세)이면 허용
-            if rsi14 < rsi14_prev and rsi14 < 50.0:
-                return fail("RSI 하락 중(강세 미충족)")
-            if vol_ratio < (VOL_ENTRY_RATIO_MIN * 0.75):
+            # RSI 40 이상이면 하락 중이어도 허용 (조정 후 반등 포착)
+            if rsi14 < rsi14_prev and rsi14 < 40.0:
+                return fail("RSI 하락·약세(40 미만)")
+            if vol_ratio < (VOL_ENTRY_RATIO_MIN * 0.65):
                 return fail("거래량 평균비 부족")
-            if vol_prev > 0 and vol_today < int(vol_prev * (VOL_ENTRY_GROWTH_MIN * 0.85)):
-                return fail("전일대비 거래량 부족")
             if not self._ai_buy_filter_soft(code, cur):
                 return fail(f"AI 상승확률 부족(트렌드·완화 thr={self._dynamic_ai_entry_min_soft():.2f})")
             return True
