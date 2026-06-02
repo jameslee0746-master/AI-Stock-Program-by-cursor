@@ -194,8 +194,8 @@ RECENT_LOSS_BLOCK_COUNT = 5  # was 2: 7일내 2회 손절 시 차단 → 5회로
 RECENT_LOSS_BLOCK_DAYS = 3
 MARKET_WEAK_MAX_CONCURRENT_POSITIONS = 3
 MARKET_WEAK_AI_ENTRY_ADD = 0.08
-DAILY_LOSS_SOFT_LIMIT_PCT = -0.008
-DAILY_LOSS_HARD_LIMIT_PCT = -0.015
+DAILY_LOSS_SOFT_LIMIT_PCT = -0.015  # was -0.008: 소프트 한도 완화
+DAILY_LOSS_HARD_LIMIT_PCT = -0.030  # was -0.015: 하드 한도 완화 (1회 손절 후 하루 매수 차단 방지)
 DAILY_LOSS_AI_ENTRY_ADD = 0.08
 DAILY_LOSS_MAX_CONCURRENT_POSITIONS = 2
 DAILY_AI_LOSS_EXIT_BLOCK_COUNT = 2
@@ -2241,6 +2241,7 @@ class TradingEngine:
         self.last_buy_date: Dict[str, datetime.date] = {}
         self.entry_time: Dict[str, datetime.datetime] = {}
         self.buy_cooldown_until: Dict[str, datetime.datetime] = {}
+        self.sell_cooldown_until: Dict[str, datetime.datetime] = {}  # 매도 timeout 후 재시도 억제
         self.pending_orders: Dict[str, Dict[str, object]] = {}
         self.realized_pnl_krw: float = 0.0
         # opw00004 계좌평가(키움 HTS 집계·수수료 반영 가능) — 주기 호출 후 갱신
@@ -3619,7 +3620,27 @@ class TradingEngine:
                                     f"[PRICE] 잔고TR 현재가 반영 {code6}: {old_px}->{current_from_holdings}"
                                 )
                 self.last_holdings_tr_rows = len(normalized)
-                self.positions = normalized
+                # TR이 0건 반환인데 기존 포지션이 존재하면 포지션을 덮어쓰지 않음
+                # (비밀번호 오류/TR 일시 실패로 보유 종목이 사라지는 버그 방지)
+                existing_positions = sum(
+                    1 for p in (self.positions or {}).values()
+                    if int((p or {}).get("qty", 0) or 0) > 0
+                )
+                if normalized or existing_positions == 0:
+                    self.positions = normalized
+                else:
+                    now = datetime.datetime.now()
+                    should_warn = (
+                        self._last_positions_sync_warn_at is None
+                        or (now - self._last_positions_sync_warn_at).total_seconds() >= 300
+                    )
+                    if should_warn:
+                        self._emit_log(
+                            f"[HOLDINGS] TR 0건이나 기존 보유 {existing_positions}종목 유지 "
+                            "(계좌비번 확인 또는 TR 일시 실패)"
+                        )
+                        self._last_positions_sync_warn_at = now
+                    return
                 hold_items = sorted(
                     (
                         (c, int((p or {}).get("qty", 0) or 0))
@@ -3652,10 +3673,10 @@ class TradingEngine:
                     or (now - self._last_positions_sync_warn_at).total_seconds() >= 300
                 )
                 if should_warn:
-                    pw_state = "설정됨" if str(password).strip() else "미설정"
+                    pw_state = "설정됨" if str(password).strip() else "미설정(--pw 또는 KIWOOM_ACCOUNT_PASSWORD 필요)"
                     self._emit_log(
                         f"[HOLDINGS] 잔고조회 결과 0건 (opw00018). 계좌비번={pw_state}. "
-                        "키움 HTS 보유와 다르면 KIWOOM_ACCOUNT_PASSWORD 또는 --pw 확인 필요"
+                        "보유종목이 있다면 앱 재시작 시 --pw 계좌비밀번호 인자를 추가하세요"
                     )
                     self._last_positions_sync_warn_at = now
         except Exception as e:
@@ -4141,6 +4162,9 @@ class TradingEngine:
         if not pos or pos.get("qty", 0) <= 0:
             return ""
         if self.pending_sell.get(code, False):
+            return ""
+        cooldown_until = self.sell_cooldown_until.get(code)
+        if isinstance(cooldown_until, datetime.datetime) and datetime.datetime.now() < cooldown_until:
             return ""
 
         cur = self.current_price.get(code)
@@ -4697,6 +4721,7 @@ class TradingEngine:
                 prev_qty = int(meta.get("prev_qty", ord_qty) or ord_qty)
                 if cur_qty < prev_qty:
                     self.pending_sell[code] = False
+                    self.sell_cooldown_until.pop(code, None)  # 체결 시 쿨다운 해제
                     sold_qty = prev_qty - cur_qty
                     already = int(meta.get("fills_notified_qty", 0) or 0)
                     to_notify = max(0, sold_qty - already)
@@ -4766,14 +4791,19 @@ class TradingEngine:
                 elif elapsed > 25:
                     self.pending_sell[code] = False
                     to_clear.append(code)
+                    # 매도 timeout 후 2분간 재시도 억제 (무한 루프 방지)
+                    retry_count = int(meta.get("sell_timeout_count", 0)) + 1
+                    meta["sell_timeout_count"] = retry_count
+                    cooldown_sec = min(120 * retry_count, 600)  # 1회:2분, 2회:4분, 최대10분
+                    self.sell_cooldown_until[code] = datetime.datetime.now() + datetime.timedelta(seconds=cooldown_sec)
                     self._append_order_event(
                         event="ORDER_TIMEOUT",
                         code=code,
                         side="SELL",
                         qty=int(ord_qty),
-                        note=f"pending {int(elapsed)}s",
+                        note=f"pending {int(elapsed)}s retry={retry_count} cooldown={cooldown_sec}s",
                     )
-                    self._emit_log(f"[WARN] sell pending timeout {code}")
+                    self._emit_log(f"[WARN] sell pending timeout {code} (재시도 {retry_count}회, {cooldown_sec}s 후 재시도)")
         for code in to_clear:
             self.pending_orders.pop(code, None)
 
