@@ -2467,8 +2467,22 @@ class TradingEngine:
                 pass
         self._write_log_file(msg)
 
+    def _market_phase_tag(self) -> str:
+        """현재 시각에 해당하는 장 구간 태그를 반환한다."""
+        try:
+            now = QTime.currentTime()
+            if QTime(8, 0, 0) <= now <= QTime(8, 59, 59):
+                return "PRE"   # 프리마켓 08:00~08:59
+            if QTime(9, 0, 0) <= now < QTime(15, 30, 0):
+                return "MKT"   # 정규장 09:00~15:30
+            if QTime(15, 30, 0) <= now < QTime(20, 0, 0):
+                return "AFT"   # 애프터마켓 15:30~20:00
+            return "OUT"       # 장외 20:00 이후 / 08:00 이전
+        except Exception:
+            return "OUT"
+
     def _write_log_file(self, msg: str) -> None:
-        """로그를 log/YYYY-MM-DD.txt 파일에 저장한다."""
+        """로그를 log/YYYY-MM-DD.txt 파일에 장 구간 태그와 함께 저장한다."""
         try:
             today = datetime.date.today()
             if self._log_file_date != today:
@@ -2485,7 +2499,8 @@ class TradingEngine:
                 self._log_file_date = today
             if self._log_file_handle is not None:
                 ts = datetime.datetime.now().strftime("%H:%M:%S")
-                self._log_file_handle.write(f"[{ts}] {msg}\n")  # type: ignore[union-attr]
+                phase = self._market_phase_tag()
+                self._log_file_handle.write(f"[{ts}][{phase}] {msg}\n")  # type: ignore[union-attr]
         except Exception:
             pass
 
@@ -4893,12 +4908,13 @@ class TradingEngine:
         # 장 마감 리포트 출력 후 로그 자동 분석 예약 (15:40 이후 별도 실행)
 
     def _auto_analyze_daily_log(self) -> None:
-        """장 마감 후 하루 1회: 오늘의 로그 파일을 파싱해 자동 분석 리포트를 생성한다."""
+        """애프터마켓 종료(20:00) 후 하루 1회: 프리마켓~애프터마켓 전 구간 로그를 파싱해
+        자동 분석 리포트와 코드 수정 제안을 생성한다."""
         today = datetime.date.today()
         if self._log_analysis_done_date == today:
             return
-        # 15:40 이후에만 실행 (일별 리포트보다 약간 늦게)
-        if QTime.currentTime() < QTime(15, 40, 0):
+        # 애프터마켓(15:30~20:00) 완전 종료 이후에만 실행
+        if QTime.currentTime() < QTime(20, 0, 0):
             return
 
         log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
@@ -4911,32 +4927,45 @@ class TradingEngine:
 
         try:
             with open(log_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+                raw_lines = f.readlines()
         except Exception:
             return
 
-        # ─── 파싱 ──────────────────────────────────────────────
-        buy_orders: list = []
-        sell_orders: list = []
-        filled_sells: list = []
-        sell_timeouts: collections.Counter = collections.Counter()
+        # ─── 구간별 파싱 ──────────────────────────────────────
+        # 로그 형식: [HH:MM:SS][PRE/MKT/AFT/OUT] ...
+        PHASES = ("PRE", "MKT", "AFT", "OUT")
+
+        def _phase(line: str) -> str:
+            m = re.search(r"\]\[([A-Z]+)\]", line)
+            return m.group(1) if m else "OUT"
+
+        buy_orders: collections.Counter = collections.Counter()    # phase → count
+        sell_orders: collections.Counter = collections.Counter()
+        filled_sells: collections.Counter = collections.Counter()
+        sell_timeouts: collections.Counter = collections.Counter()  # stock_code → count
         sell_giveups: list = []
-        buy_blocks: collections.Counter = collections.Counter()
-        real_rates: list = []
+        buy_blocks: collections.Counter = collections.Counter()    # reason → count
+        # 정규장 구간만 실시간 수신율 집계 (MKT)
+        real_rates_mkt: list = []
+        real_rates_aft: list = []
         holdings_zero: int = 0
         warn_lines: list = []
         diag_lines: list = []
-        news_lines: list = []
         bt_gate_lines: list = []
+        filled_sell_reasons: collections.Counter = collections.Counter()
 
-        for line in lines:
-            s = line.strip()
+        for raw in raw_lines:
+            s = raw.strip()
+            ph = _phase(s)
             if "[BUY-ORDER]" in s:
-                buy_orders.append(s)
+                buy_orders[ph] += 1
             elif "[SELL-ORDER]" in s:
-                sell_orders.append(s)
+                sell_orders[ph] += 1
             elif "[FILLED-SELL]" in s:
-                filled_sells.append(s)
+                filled_sells[ph] += 1
+                m = re.search(r"reason=(\S+)", s)
+                if m:
+                    filled_sell_reasons[m.group(1)] += 1
             elif "sell pending timeout" in s:
                 m = re.search(r"timeout (\w+)", s)
                 if m:
@@ -4944,7 +4973,6 @@ class TradingEngine:
             elif "sell GIVE-UP" in s:
                 sell_giveups.append(s)
             elif "[BUY-BLOCK]" in s:
-                # 차단 사유 추출
                 m = re.search(r"\[BUY-BLOCK\] \S+ (.+)$", s)
                 if m:
                     reason = m.group(1).split("(")[0].strip()
@@ -4952,30 +4980,34 @@ class TradingEngine:
             elif "[REAL]" in s:
                 m = re.search(r"수신율 ([\d.]+)/s", s)
                 if m:
-                    real_rates.append(float(m.group(1)))
+                    rate = float(m.group(1))
+                    if ph == "MKT":
+                        real_rates_mkt.append(rate)
+                    elif ph == "AFT":
+                        real_rates_aft.append(rate)
             elif "TR 0건이나" in s or "잔고조회 결과 0건" in s:
                 holdings_zero += 1
             elif "[WARN]" in s and "수신율 0.0" not in s:
                 warn_lines.append(s)
             elif "[BUY-DIAG]" in s:
                 diag_lines.append(s)
-            elif "[NEWS]" in s and "갱신 완료" in s:
-                news_lines.append(s)
             elif "[BT-GATE]" in s:
                 bt_gate_lines.append(s)
 
-        # ─── 요약 계산 ─────────────────────────────────────────
-        n_buy = len(buy_orders)
-        n_sell_order = len(sell_orders)
-        n_filled = len(filled_sells)
+        # ─── 집계 ─────────────────────────────────────────────
+        n_buy_total = sum(buy_orders.values())
+        n_sell_total = sum(sell_orders.values())
+        n_filled_total = sum(filled_sells.values())
         n_timeout_total = sum(sell_timeouts.values())
         n_giveup = len(sell_giveups)
-        avg_real = (sum(real_rates) / len(real_rates)) if real_rates else 0.0
-        zero_real = sum(1 for r in real_rates if r == 0.0)
-        top_blocks = buy_blocks.most_common(5)
+
+        avg_real_mkt = (sum(real_rates_mkt) / len(real_rates_mkt)) if real_rates_mkt else 0.0
+        zero_real_mkt = sum(1 for r in real_rates_mkt if r == 0.0)
+        avg_real_aft = (sum(real_rates_aft) / len(real_rates_aft)) if real_rates_aft else 0.0
+
+        top_blocks = buy_blocks.most_common(7)
         top_timeout_stocks = sell_timeouts.most_common(5)
 
-        # 마지막 BUY-DIAG에서 시장 상태 추출
         last_market = "-"
         last_strategy = "-"
         if diag_lines:
@@ -4983,30 +5015,107 @@ class TradingEngine:
             if m:
                 last_market, last_strategy = m.group(1), m.group(2)
 
-        # BT-GATE 최종 모드
         last_bt_mode = "-"
         if bt_gate_lines:
             m = re.search(r"mode=(\S+)", bt_gate_lines[-1])
             if m:
                 last_bt_mode = m.group(1)
 
+        # ─── 코드 수정 제안 생성 ──────────────────────────────
+        suggestions: list = []
+
+        # 매수 차단 분석
+        block_reasons = {r: c for r, c in top_blocks}
+        if block_reasons.get("당일 승률 저조", 0) > 50:
+            suggestions.append(
+                "【파라미터】DAILY_WIN_RATE_BLOCK_MIN_SELLS 값을 늘리거나 "
+                "DAILY_WIN_RATE_BLOCK_PCT를 낮추면 승률 차단 완화 가능"
+            )
+        if block_reasons.get("현재가 미수신", 0) > 500:
+            suggestions.append(
+                "【실시간】현재가 미수신 종목이 많음 — SetRealReg 등록 목록 확인, "
+                "종목 수 축소(MAX_WATCH_COUNT) 또는 재등록 로직 점검 필요"
+            )
+        if block_reasons.get("전략조건 미충족", 0) > 200 and n_buy_total == 0:
+            suggestions.append(
+                "【전략】진입 조건이 전일보다 엄격 — MA20_ENTRY_GAP_PCT, "
+                "VOL_ENTRY_RATIO_MIN, RSI_ENTRY_MIN/MAX 완화 검토"
+            )
+        if block_reasons.get("당일 손실한도 초과", 0) > 0:
+            suggestions.append(
+                "【리스크】당일 손실한도(DAILY_LOSS_SOFT/HARD_LIMIT_PCT) 초과 — "
+                "손절 기준(STOP_LOSS_PCT) 또는 포지션 크기 조정 검토"
+            )
+
+        # 매도 미체결 분석
+        if n_giveup > 0:
+            giveup_codes = ", ".join(c for c in sell_timeouts.keys()
+                                     if sell_timeouts[c] >= 10)
+            suggestions.append(
+                f"【매도】{n_giveup}개 종목 매도 GIVE-UP ({giveup_codes or '확인필요'}) — "
+                "하한가 종목 제거 또는 손절 임계값 재검토 필요"
+            )
+        if n_timeout_total > 10 and n_giveup == 0:
+            suggestions.append(
+                f"【매도】매도 미체결 {n_timeout_total}회 — "
+                "ORDER_TIMEOUT_LATE_FILL_GUARD_SEC 축소 또는 지정가→시장가 전환 검토"
+            )
+
+        # 실시간 수신 분석
+        if zero_real_mkt > 5:
+            suggestions.append(
+                f"【실시간】정규장 중 수신율 0/s 구간 {zero_real_mkt}회 — "
+                "SetRealReg 재호출 로직 또는 접속 안정성 점검 필요"
+            )
+
+        # 잔고조회 분석
+        if holdings_zero > 10:
+            suggestions.append(
+                f"【잔고】HOLDINGS 0건 이벤트 {holdings_zero}회 — "
+                "계좌비번 옵션 확인, RECONCILE_SYNC_INTERVAL_SEC 조정 검토"
+            )
+
+        if not suggestions:
+            suggestions.append("특별한 코드 수정 없이 정상 동작 범위로 보임")
+
         # ─── 리포트 작성 ──────────────────────────────────────
-        sep = "=" * 60
+        sep = "=" * 64
         lines_out = [
             sep,
-            f"[AI-ANALYSIS] {today.strftime('%Y-%m-%d')} 일별 자동 분석 리포트",
+            f"  [AI-ANALYSIS] {today.strftime('%Y-%m-%d')} 전 구간 자동 분석 리포트",
+            f"  분석 시점: 애프터마켓 종료 후 ({datetime.datetime.now().strftime('%H:%M')})",
             sep,
             "",
-            "■ 주문 요약",
-            f"  매수 주문:       {n_buy}건",
-            f"  매도 주문:       {n_sell_order}건  (체결확인: {n_filled}건)",
-            f"  매도 미체결:     {n_timeout_total}회 timeout  |  포기(GIVE-UP): {n_giveup}건",
+            "■ 구간별 주문 요약",
+            f"  {'구간':<6} {'매수':>6} {'매도주문':>8} {'체결':>6}",
+            f"  {'-'*30}",
+        ]
+        for ph in ("PRE", "MKT", "AFT"):
+            ph_label = {"PRE": "프리마켓", "MKT": "정규장  ", "AFT": "애프터  "}[ph]
+            lines_out.append(
+                f"  {ph_label}  {buy_orders[ph]:>5}건  {sell_orders[ph]:>7}건  {filled_sells[ph]:>5}건"
+            )
+        lines_out += [
+            f"  {'합계':<8}  {n_buy_total:>5}건  {n_sell_total:>7}건  {n_filled_total:>5}건",
             "",
-            "■ 실시간 시세 수신",
-            f"  평균 수신율:     {avg_real:.1f}/s",
-            f"  0/s 구간 수:     {zero_real}회  (장 마감 후 포함)",
+            "■ 매도 미체결",
+            f"  timeout 총 {n_timeout_total}회  |  GIVE-UP {n_giveup}건",
+        ]
+        if top_timeout_stocks:
+            lines_out.append("  반복 미체결 종목:")
+            for rank, (code, cnt) in enumerate(top_timeout_stocks, 1):
+                lines_out.append(f"    {rank}. {code}: {cnt}회")
+        if filled_sell_reasons:
+            lines_out.append("  체결 매도 사유: " +
+                             ", ".join(f"{k}:{v}" for k, v in filled_sell_reasons.most_common()))
+
+        lines_out += [
             "",
-            "■ 매수 차단 TOP-5 사유",
+            "■ 실시간 시세 수신 (정규장 기준)",
+            f"  정규장 평균: {avg_real_mkt:.1f}/s   0/s 구간: {zero_real_mkt}회",
+            f"  애프터마켓 평균: {avg_real_aft:.1f}/s  (15:30 이후 시세 미수신은 정상)",
+            "",
+            "■ 매수 차단 TOP-7 사유",
         ]
         for rank, (reason, cnt) in enumerate(top_blocks, 1):
             lines_out.append(f"  {rank}. {reason}: {cnt}회")
@@ -5015,20 +5124,11 @@ class TradingEngine:
 
         lines_out += [
             "",
-            "■ 매도 미체결 반복 종목 TOP-5",
-        ]
-        for rank, (code, cnt) in enumerate(top_timeout_stocks, 1):
-            lines_out.append(f"  {rank}. {code}: timeout {cnt}회")
-        if not top_timeout_stocks:
-            lines_out.append("  (없음)")
-
-        lines_out += [
-            "",
-            "■ 잔고조회(HOLDINGS) 0건 이벤트",
+            "■ 잔고조회 0건 이벤트",
             f"  {holdings_zero}회",
             "",
-            "■ 시장 상태 (장 마감 시점)",
-            f"  시장 레짐: {last_market}  /  활성 전략: {last_strategy}  /  BT-GATE: {last_bt_mode}",
+            "■ 장 마감 시점 상태",
+            f"  시장 레짐: {last_market}  /  전략: {last_strategy}  /  BT-GATE: {last_bt_mode}",
             "",
             "■ 경고(WARN) 상위 5건",
         ]
@@ -5039,34 +5139,25 @@ class TradingEngine:
 
         lines_out += [
             "",
-            "■ 진단 메모",
+            sep,
+            "  ★ 코드 수정 제안 (내일 대응 전 확인 권장)",
+            sep,
         ]
-        # 진단: 매도 미체결 반복이 있으면 경고
-        if n_giveup > 0:
-            lines_out.append(f"  ⚠ {n_giveup}개 종목이 매도 GIVE-UP — 하한가 또는 수동 확인 필요")
-        if zero_real > 20:
-            lines_out.append(f"  ⚠ 실시간 수신 0/s 구간 {zero_real}회 — 장 중 데이터 끊김 의심")
-        if holdings_zero > 5:
-            lines_out.append(f"  ⚠ 잔고조회 0건 {holdings_zero}회 — 계좌 비번 또는 TR 오류 점검 필요")
-        if n_buy == 0 and n_sell_order > 0:
-            lines_out.append("  ⚠ 매수 0건 — 진입 조건이 너무 엄격하거나 당일 승률 차단 확인 필요")
-        if top_blocks and top_blocks[0][0] == "당일 승률 저조":
-            lines_out.append(f"  ⚠ 매수 차단 1위: 당일 승률 저조 — DAILY_WIN_RATE 파라미터 재검토 권장")
-        if not any([n_giveup, zero_real > 20, holdings_zero > 5, n_buy == 0]):
-            lines_out.append("  정상 동작 범위로 보임")
+        for i, sug in enumerate(suggestions, 1):
+            lines_out.append(f"  [{i}] {sug}")
 
         lines_out += ["", sep, ""]
 
         report_text = "\n".join(lines_out)
 
-        # 리포트를 로그 파일에 추가 기록
+        # 로그 파일에 추가 기록
         try:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write("\n" + report_text)
         except Exception:
             pass
 
-        # 별도 analysis 파일로도 저장
+        # 별도 analysis 파일 저장
         try:
             analysis_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + "_analysis.txt")
             with open(analysis_path, "w", encoding="utf-8") as f:
@@ -5074,13 +5165,13 @@ class TradingEngine:
         except Exception:
             pass
 
-        # 앱 로그창에도 핵심 요약만 출력
+        # 앱 로그창 핵심 요약
         summary = (
-            f"[AI-ANALYSIS] {today} 자동분석 완료 — "
-            f"매수:{n_buy} 매도주문:{n_sell_order} 체결:{n_filled} "
+            f"[AI-ANALYSIS] {today} 전구간 분석완료 — "
+            f"매수:{n_buy_total} 매도:{n_sell_total} 체결:{n_filled_total} "
             f"timeout:{n_timeout_total} giveup:{n_giveup} "
             f"차단1위:{top_blocks[0][0] if top_blocks else '-'} "
-            f"수신율평균:{avg_real:.1f}/s  →  log/{today}_analysis.txt 저장"
+            f"정규장수신율:{avg_real_mkt:.1f}/s  →  log/{today}_analysis.txt"
         )
         self._emit_log(summary)
         self._log_analysis_done_date = today
