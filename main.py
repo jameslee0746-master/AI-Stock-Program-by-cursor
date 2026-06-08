@@ -2253,6 +2253,9 @@ class TradingEngine:
         self.opw_eval_fetched_at: Optional[datetime.datetime] = None
         self._scale_in_done: Dict[str, bool] = {}
         self._daily_report_done_date: Optional[datetime.date] = None
+        self._log_file_date: Optional[datetime.date] = None
+        self._log_file_handle: Optional[object] = None  # 일별 로그 파일 핸들
+        self._log_analysis_done_date: Optional[datetime.date] = None  # 자동 분석 실행 날짜
         self._auto_bt_running = False
         self._auto_bt_last_at: Optional[datetime.datetime] = None
         self._auto_bt_state: Dict[str, object] = {
@@ -2462,6 +2465,29 @@ class TradingEngine:
                 self.on_log(msg)
             except Exception:
                 pass
+        self._write_log_file(msg)
+
+    def _write_log_file(self, msg: str) -> None:
+        """로그를 log/YYYY-MM-DD.txt 파일에 저장한다."""
+        try:
+            today = datetime.date.today()
+            if self._log_file_date != today:
+                # 날짜가 바뀌면 이전 파일 닫고 새 파일 열기
+                if self._log_file_handle is not None:
+                    try:
+                        self._log_file_handle.close()  # type: ignore[union-attr]
+                    except Exception:
+                        pass
+                log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + ".txt")
+                self._log_file_handle = open(log_path, "a", encoding="utf-8", buffering=1)
+                self._log_file_date = today
+            if self._log_file_handle is not None:
+                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                self._log_file_handle.write(f"[{ts}] {msg}\n")  # type: ignore[union-attr]
+        except Exception:
+            pass
 
     def _log_buy_block(self, code: str, reason: str, interval_sec: float = 120.0) -> None:
         """매수 차단 사유 로그(종목+사유 단위로 주기 제한)."""
@@ -4864,6 +4890,200 @@ class TradingEngine:
             f"/ 승률 {win_rate:.1f}% / 매도사유 {reason_txt}"
         )
         self._daily_report_done_date = now.date()
+        # 장 마감 리포트 출력 후 로그 자동 분석 예약 (15:40 이후 별도 실행)
+
+    def _auto_analyze_daily_log(self) -> None:
+        """장 마감 후 하루 1회: 오늘의 로그 파일을 파싱해 자동 분석 리포트를 생성한다."""
+        today = datetime.date.today()
+        if self._log_analysis_done_date == today:
+            return
+        # 15:40 이후에만 실행 (일별 리포트보다 약간 늦게)
+        if QTime.currentTime() < QTime(15, 40, 0):
+            return
+
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+        log_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + ".txt")
+        if not os.path.exists(log_path):
+            return
+
+        import re
+        import collections
+
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            return
+
+        # ─── 파싱 ──────────────────────────────────────────────
+        buy_orders: list = []
+        sell_orders: list = []
+        filled_sells: list = []
+        sell_timeouts: collections.Counter = collections.Counter()
+        sell_giveups: list = []
+        buy_blocks: collections.Counter = collections.Counter()
+        real_rates: list = []
+        holdings_zero: int = 0
+        warn_lines: list = []
+        diag_lines: list = []
+        news_lines: list = []
+        bt_gate_lines: list = []
+
+        for line in lines:
+            s = line.strip()
+            if "[BUY-ORDER]" in s:
+                buy_orders.append(s)
+            elif "[SELL-ORDER]" in s:
+                sell_orders.append(s)
+            elif "[FILLED-SELL]" in s:
+                filled_sells.append(s)
+            elif "sell pending timeout" in s:
+                m = re.search(r"timeout (\w+)", s)
+                if m:
+                    sell_timeouts[m.group(1)] += 1
+            elif "sell GIVE-UP" in s:
+                sell_giveups.append(s)
+            elif "[BUY-BLOCK]" in s:
+                # 차단 사유 추출
+                m = re.search(r"\[BUY-BLOCK\] \S+ (.+)$", s)
+                if m:
+                    reason = m.group(1).split("(")[0].strip()
+                    buy_blocks[reason] += 1
+            elif "[REAL]" in s:
+                m = re.search(r"수신율 ([\d.]+)/s", s)
+                if m:
+                    real_rates.append(float(m.group(1)))
+            elif "TR 0건이나" in s or "잔고조회 결과 0건" in s:
+                holdings_zero += 1
+            elif "[WARN]" in s and "수신율 0.0" not in s:
+                warn_lines.append(s)
+            elif "[BUY-DIAG]" in s:
+                diag_lines.append(s)
+            elif "[NEWS]" in s and "갱신 완료" in s:
+                news_lines.append(s)
+            elif "[BT-GATE]" in s:
+                bt_gate_lines.append(s)
+
+        # ─── 요약 계산 ─────────────────────────────────────────
+        n_buy = len(buy_orders)
+        n_sell_order = len(sell_orders)
+        n_filled = len(filled_sells)
+        n_timeout_total = sum(sell_timeouts.values())
+        n_giveup = len(sell_giveups)
+        avg_real = (sum(real_rates) / len(real_rates)) if real_rates else 0.0
+        zero_real = sum(1 for r in real_rates if r == 0.0)
+        top_blocks = buy_blocks.most_common(5)
+        top_timeout_stocks = sell_timeouts.most_common(5)
+
+        # 마지막 BUY-DIAG에서 시장 상태 추출
+        last_market = "-"
+        last_strategy = "-"
+        if diag_lines:
+            m = re.search(r"시장=(\S+)\s+활성전략=(\S+)", diag_lines[-1])
+            if m:
+                last_market, last_strategy = m.group(1), m.group(2)
+
+        # BT-GATE 최종 모드
+        last_bt_mode = "-"
+        if bt_gate_lines:
+            m = re.search(r"mode=(\S+)", bt_gate_lines[-1])
+            if m:
+                last_bt_mode = m.group(1)
+
+        # ─── 리포트 작성 ──────────────────────────────────────
+        sep = "=" * 60
+        lines_out = [
+            sep,
+            f"[AI-ANALYSIS] {today.strftime('%Y-%m-%d')} 일별 자동 분석 리포트",
+            sep,
+            "",
+            "■ 주문 요약",
+            f"  매수 주문:       {n_buy}건",
+            f"  매도 주문:       {n_sell_order}건  (체결확인: {n_filled}건)",
+            f"  매도 미체결:     {n_timeout_total}회 timeout  |  포기(GIVE-UP): {n_giveup}건",
+            "",
+            "■ 실시간 시세 수신",
+            f"  평균 수신율:     {avg_real:.1f}/s",
+            f"  0/s 구간 수:     {zero_real}회  (장 마감 후 포함)",
+            "",
+            "■ 매수 차단 TOP-5 사유",
+        ]
+        for rank, (reason, cnt) in enumerate(top_blocks, 1):
+            lines_out.append(f"  {rank}. {reason}: {cnt}회")
+        if not top_blocks:
+            lines_out.append("  (차단 없음)")
+
+        lines_out += [
+            "",
+            "■ 매도 미체결 반복 종목 TOP-5",
+        ]
+        for rank, (code, cnt) in enumerate(top_timeout_stocks, 1):
+            lines_out.append(f"  {rank}. {code}: timeout {cnt}회")
+        if not top_timeout_stocks:
+            lines_out.append("  (없음)")
+
+        lines_out += [
+            "",
+            "■ 잔고조회(HOLDINGS) 0건 이벤트",
+            f"  {holdings_zero}회",
+            "",
+            "■ 시장 상태 (장 마감 시점)",
+            f"  시장 레짐: {last_market}  /  활성 전략: {last_strategy}  /  BT-GATE: {last_bt_mode}",
+            "",
+            "■ 경고(WARN) 상위 5건",
+        ]
+        for w in warn_lines[:5]:
+            lines_out.append(f"  {w[-120:]}")
+        if not warn_lines:
+            lines_out.append("  (없음)")
+
+        lines_out += [
+            "",
+            "■ 진단 메모",
+        ]
+        # 진단: 매도 미체결 반복이 있으면 경고
+        if n_giveup > 0:
+            lines_out.append(f"  ⚠ {n_giveup}개 종목이 매도 GIVE-UP — 하한가 또는 수동 확인 필요")
+        if zero_real > 20:
+            lines_out.append(f"  ⚠ 실시간 수신 0/s 구간 {zero_real}회 — 장 중 데이터 끊김 의심")
+        if holdings_zero > 5:
+            lines_out.append(f"  ⚠ 잔고조회 0건 {holdings_zero}회 — 계좌 비번 또는 TR 오류 점검 필요")
+        if n_buy == 0 and n_sell_order > 0:
+            lines_out.append("  ⚠ 매수 0건 — 진입 조건이 너무 엄격하거나 당일 승률 차단 확인 필요")
+        if top_blocks and top_blocks[0][0] == "당일 승률 저조":
+            lines_out.append(f"  ⚠ 매수 차단 1위: 당일 승률 저조 — DAILY_WIN_RATE 파라미터 재검토 권장")
+        if not any([n_giveup, zero_real > 20, holdings_zero > 5, n_buy == 0]):
+            lines_out.append("  정상 동작 범위로 보임")
+
+        lines_out += ["", sep, ""]
+
+        report_text = "\n".join(lines_out)
+
+        # 리포트를 로그 파일에 추가 기록
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("\n" + report_text)
+        except Exception:
+            pass
+
+        # 별도 analysis 파일로도 저장
+        try:
+            analysis_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + "_analysis.txt")
+            with open(analysis_path, "w", encoding="utf-8") as f:
+                f.write(report_text)
+        except Exception:
+            pass
+
+        # 앱 로그창에도 핵심 요약만 출력
+        summary = (
+            f"[AI-ANALYSIS] {today} 자동분석 완료 — "
+            f"매수:{n_buy} 매도주문:{n_sell_order} 체결:{n_filled} "
+            f"timeout:{n_timeout_total} giveup:{n_giveup} "
+            f"차단1위:{top_blocks[0][0] if top_blocks else '-'} "
+            f"수신율평균:{avg_real:.1f}/s  →  log/{today}_analysis.txt 저장"
+        )
+        self._emit_log(summary)
+        self._log_analysis_done_date = today
 
     def _maybe_prefetch_news(self) -> None:
         """30분마다 보유·관심 종목 뉴스를 백그라운드 스레드로 미리 가져온다."""
@@ -4933,6 +5153,7 @@ class TradingEngine:
             self._sync_holding_current_prices(interval_sec=30.0)
             self._maybe_periodic_holdings_sync()
             self._emit_daily_report_if_needed()
+            self._auto_analyze_daily_log()
             return
 
         self._maybe_start_auto_backtest()
