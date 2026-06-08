@@ -2242,6 +2242,7 @@ class TradingEngine:
         self.entry_time: Dict[str, datetime.datetime] = {}
         self.buy_cooldown_until: Dict[str, datetime.datetime] = {}
         self.sell_cooldown_until: Dict[str, datetime.datetime] = {}  # 매도 timeout 후 재시도 억제
+        self._sell_retry_counts: Dict[str, int] = {}  # 종목별 매도 재시도 횟수 (주문 교체 후에도 누적)
         self.pending_orders: Dict[str, Dict[str, object]] = {}
         self.realized_pnl_krw: float = 0.0
         # opw00004 계좌평가(키움 HTS 집계·수수료 반영 가능) — 주기 호출 후 갱신
@@ -2834,25 +2835,29 @@ class TradingEngine:
         return count
 
     def _today_sell_stats(self) -> tuple[int, int]:
+        """당일 매도 완료 종목 수와 수익 종목 수를 반환.
+        같은 종목의 반복 체결(부분 체결 or stop_loss 재시도)은 종목별로 합산해 1건으로 집계한다.
+        """
         tracker = getattr(self, "trade_tracker", None)
         if tracker is None:
             return 0, 0
         today = datetime.date.today()
-        sells = 0
-        wins = 0
         try:
             records = list(getattr(tracker, "records", []) or [])
         except Exception:
             return 0, 0
+        code_pnl: Dict[str, float] = {}  # 종목코드 → 당일 누적 실현손익
         for r in records:
             if str(getattr(r, "side", "")).upper() != "SELL":
                 continue
             ts = getattr(r, "ts", None)
             if not (isinstance(ts, datetime.datetime) and ts.date() == today):
                 continue
-            sells += 1
-            if float(getattr(r, "realized_pnl_krw", 0.0) or 0.0) > 0:
-                wins += 1
+            code = str(getattr(r, "code", "") or "")
+            pnl = float(getattr(r, "realized_pnl_krw", 0.0) or 0.0)
+            code_pnl[code] = code_pnl.get(code, 0.0) + pnl
+        sells = len(code_pnl)
+        wins = sum(1 for v in code_pnl.values() if v > 0)
         return sells, wins
 
     def _effective_max_positions(self) -> int:
@@ -4722,6 +4727,7 @@ class TradingEngine:
                 if cur_qty < prev_qty:
                     self.pending_sell[code] = False
                     self.sell_cooldown_until.pop(code, None)  # 체결 시 쿨다운 해제
+                    self._sell_retry_counts.pop(code, None)   # 체결 시 누적 retry 초기화
                     sold_qty = prev_qty - cur_qty
                     already = int(meta.get("fills_notified_qty", 0) or 0)
                     to_notify = max(0, sold_qty - already)
@@ -4791,19 +4797,35 @@ class TradingEngine:
                 elif elapsed > 25:
                     self.pending_sell[code] = False
                     to_clear.append(code)
-                    # 매도 timeout 후 2분간 재시도 억제 (무한 루프 방지)
-                    retry_count = int(meta.get("sell_timeout_count", 0)) + 1
-                    meta["sell_timeout_count"] = retry_count
-                    cooldown_sec = min(120 * retry_count, 600)  # 1회:2분, 2회:4분, 최대10분
-                    self.sell_cooldown_until[code] = datetime.datetime.now() + datetime.timedelta(seconds=cooldown_sec)
-                    self._append_order_event(
-                        event="ORDER_TIMEOUT",
-                        code=code,
-                        side="SELL",
-                        qty=int(ord_qty),
-                        note=f"pending {int(elapsed)}s retry={retry_count} cooldown={cooldown_sec}s",
-                    )
-                    self._emit_log(f"[WARN] sell pending timeout {code} (재시도 {retry_count}회, {cooldown_sec}s 후 재시도)")
+                    # 종목별 누적 retry 횟수 (주문 교체 후에도 유지)
+                    self._sell_retry_counts[code] = self._sell_retry_counts.get(code, 0) + 1
+                    retry_count = self._sell_retry_counts[code]
+                    SELL_RETRY_GIVE_UP = 15  # 15회 이상이면 매도 포기 (하한가 등)
+                    if retry_count >= SELL_RETRY_GIVE_UP:
+                        # 장시간 미체결 → 수동 확인 필요, 더 이상 자동 재시도 안 함
+                        give_up_until = datetime.datetime.now() + datetime.timedelta(hours=2)
+                        self.sell_cooldown_until[code] = give_up_until
+                        self._append_order_event(
+                            event="ORDER_TIMEOUT",
+                            code=code,
+                            side="SELL",
+                            qty=int(ord_qty),
+                            note=f"pending {int(elapsed)}s retry={retry_count} GIVE_UP 2h",
+                        )
+                        self._emit_log(
+                            f"[WARN] sell GIVE-UP {code} retry={retry_count}회 초과 — 2시간 후 재시도 (하한가/수동확인 권장)"
+                        )
+                    else:
+                        cooldown_sec = min(120 * retry_count, 600)  # 1회:2분, 5회+:10분 상한
+                        self.sell_cooldown_until[code] = datetime.datetime.now() + datetime.timedelta(seconds=cooldown_sec)
+                        self._append_order_event(
+                            event="ORDER_TIMEOUT",
+                            code=code,
+                            side="SELL",
+                            qty=int(ord_qty),
+                            note=f"pending {int(elapsed)}s retry={retry_count} cooldown={cooldown_sec}s",
+                        )
+                        self._emit_log(f"[WARN] sell pending timeout {code} (재시도 {retry_count}회, {cooldown_sec}s 후 재시도)")
         for code in to_clear:
             self.pending_orders.pop(code, None)
 
