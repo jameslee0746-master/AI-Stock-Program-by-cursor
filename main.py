@@ -1246,6 +1246,42 @@ def _safe_opw_money_int(cell: object) -> Optional[int]:
 SCREEN_NO_ACCOUNT_EVAL = "0404"
 
 
+# ─── strategy_params.json 로더 ────────────────────────────────────────────────
+# 앱 기동 시 strategy_params.json 을 읽어, 자동 조정된 파라미터를 모듈 전역변수로 덮어씀.
+# 파일이 없거나 파싱 실패 시 하드코딩 기본값을 그대로 사용한다.
+def _apply_strategy_params_from_file() -> None:
+    """strategy_params.json 의 value 필드를 모듈 globals 에 적용한다."""
+    _json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategy_params.json")
+    if not os.path.exists(_json_path):
+        return
+    try:
+        import json as _json
+        with open(_json_path, "r", encoding="utf-8") as _f:
+            _data = _json.load(_f)
+        _params = _data.get("params", {})
+        _g = globals()
+        _applied: list = []
+        for _key, _meta in _params.items():
+            if _key in _g and "value" in _meta:
+                _old = _g[_key]
+                _new = _meta["value"]
+                if type(_old) is int and not isinstance(_new, bool):
+                    _new = int(_new)
+                _g[_key] = _new
+                if _old != _new:
+                    _applied.append(f"{_key}: {_old} → {_new}")
+        if _applied:
+            print(f"[PARAM-LOAD] strategy_params.json 로드 — {len(_applied)}개 파라미터 적용:")
+            for _msg in _applied:
+                print(f"  {_msg}")
+    except Exception as _e:
+        print(f"[PARAM-LOAD] strategy_params.json 로드 실패: {_e}")
+
+
+_apply_strategy_params_from_file()
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 class KiwoomOpenAPI(QAxWidget):
     """
     KHOpenAPICtrl.1 을 PyQt5 QAxWidget으로 감싼 래퍼.
@@ -2256,6 +2292,7 @@ class TradingEngine:
         self._log_file_date: Optional[datetime.date] = None
         self._log_file_handle: Optional[object] = None  # 일별 로그 파일 핸들
         self._log_analysis_done_date: Optional[datetime.date] = None  # 자동 분석 실행 날짜
+        self._log_auto_tune_done_date: Optional[datetime.date] = None  # 자동 파라미터 튜닝 실행 날짜
         self._auto_bt_running = False
         self._auto_bt_last_at: Optional[datetime.datetime] = None
         self._auto_bt_state: Dict[str, object] = {
@@ -5176,6 +5213,208 @@ class TradingEngine:
         self._emit_log(summary)
         self._log_analysis_done_date = today
 
+    # ──────────────────────────────────────────────────────────────────────────
+    def _auto_tune_strategy_params(self) -> None:
+        """분석 파일을 읽어 strategy_params.json 을 자동 조정하고 git commit 한다.
+        _auto_analyze_daily_log() 완료(21:00 이후) 후 하루 1회 실행.
+        - '안전' 파라미터(승률 차단, 거래량 필터 등)만 소폭 조정 (±1 step 이내).
+        - STOP_LOSS_PCT·DAILY_LOSS_HARD_LIMIT_PCT 등 리스크 핵심 파라미터는 건드리지 않는다.
+        - log/YYYY-MM-DD_autofix.txt 에 변경 내역과 이유를 상세 기록.
+        - strategy_params.json 변경 후 git add + commit 으로 이력 보존.
+        """
+        today = datetime.date.today()
+        if self._log_auto_tune_done_date == today:
+            return
+        if self._log_analysis_done_date != today:
+            return
+        if QTime.currentTime() < QTime(21, 0, 0):
+            return
+
+        import json as _json
+        import subprocess
+        import re as _re
+        import collections as _collections
+
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+        analysis_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + "_analysis.txt")
+        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategy_params.json")
+
+        if not os.path.exists(analysis_path):
+            return
+
+        # ── 분석 파일 파싱 ──────────────────────────────────────────────────
+        try:
+            with open(analysis_path, "r", encoding="utf-8") as _f:
+                analysis_text = _f.read()
+        except Exception:
+            return
+
+        # 매수 차단 사유 TOP 추출
+        block_counts: _collections.Counter = _collections.Counter()
+        for m in _re.finditer(r"(\d+)\.\s+(.+?):\s+(\d+)회", analysis_text):
+            block_counts[m.group(2).strip()] = int(m.group(3))
+
+        # 매도 GIVE-UP 건수
+        giveup_count = len(_re.findall(r"GIVE-UP \d+건", analysis_text))
+
+        # 당일 매수 건수
+        buy_match = _re.search(r"합계\s+(\d+)건\s+\d+건\s+\d+건", analysis_text)
+        n_buy_total = int(buy_match.group(1)) if buy_match else 0
+
+        # ── strategy_params.json 로드 ────────────────────────────────────
+        try:
+            with open(json_path, "r", encoding="utf-8") as _f:
+                sp = _json.load(_f)
+        except Exception as e:
+            self._emit_log(f"[AUTO-TUNE] strategy_params.json 로드 실패: {e}")
+            return
+
+        params = sp.get("params", {})
+        changes: list = []  # (param_name, old_val, new_val, reason)
+
+        def _adjust(name: str, direction: int, reason: str) -> None:
+            """direction: +1 = 올림(완화 방향), -1 = 내림(강화 방향)"""
+            if name not in params:
+                return
+            meta = params[name]
+            old_v = meta["value"]
+            step = meta.get("step", 1)
+            new_v = old_v + direction * step
+            new_v = max(meta["min"], min(meta["max"], new_v))
+            if new_v == old_v:
+                return
+            meta["value"] = round(new_v, 6) if isinstance(new_v, float) else new_v
+            changes.append((name, old_v, new_v, reason))
+
+        # ── 조정 규칙 ────────────────────────────────────────────────────
+        win_rate_block_cnt = block_counts.get("당일 승률 저조", 0)
+        strategy_block_cnt = block_counts.get("전략조건 미충족", 0)
+        no_price_block_cnt = block_counts.get("현재가 미수신", 0)
+
+        # 규칙 1: 승률 차단이 50회 초과 → 차단 기준 완화 (MIN_SELLS +2)
+        if win_rate_block_cnt > 50:
+            _adjust("DAILY_WIN_RATE_BLOCK_MIN_SELLS", +1,
+                    f"당일 승률 저조 차단 {win_rate_block_cnt}회 → MIN_SELLS 완화")
+
+        # 규칙 2: 승률 차단이 0회이고 매수도 충분히 됐음 → 차단 기준 소폭 강화 (MIN_SELLS -2)
+        elif win_rate_block_cnt == 0 and n_buy_total >= 3:
+            _adjust("DAILY_WIN_RATE_BLOCK_MIN_SELLS", -1,
+                    f"승률 차단 없음 + 매수 {n_buy_total}건 → MIN_SELLS 소폭 강화")
+
+        # 규칙 3: 전략 조건 미충족이 200회 초과 & 매수 0건 → 거래량 필터 완화
+        if strategy_block_cnt > 200 and n_buy_total == 0:
+            _adjust("VOL_ENTRY_RATIO_MIN", -1,
+                    f"전략조건 미충족 {strategy_block_cnt}회+매수0건 → 거래량비율 완화")
+            _adjust("VOL_ENTRY_GROWTH_MIN", -1,
+                    f"전략조건 미충족 {strategy_block_cnt}회+매수0건 → 거래량증가 완화")
+        # 규칙 4: 거래량 필터 이후 매수가 충분히 발생 → 필터 소폭 복원
+        elif strategy_block_cnt < 100 and n_buy_total >= 3:
+            _adjust("VOL_ENTRY_RATIO_MIN", +1,
+                    f"전략조건 차단 {strategy_block_cnt}회+매수{n_buy_total}건 → 거래량비율 소폭 강화")
+
+        # 규칙 5: 현재가 미수신이 500회 초과 → AI 확률 문턱 완화(다른 종목 진입 용이하게)
+        if no_price_block_cnt > 500:
+            _adjust("AI_PROBA_ENTRY_MIN", -1,
+                    f"현재가 미수신 {no_price_block_cnt}회 → AI 문턱 소폭 완화")
+
+        # 규칙 6: GIVE-UP 발생 시 MARKET_OPEN_BUY_GUARD 강화 (아침 급변 종목 진입 억제)
+        if giveup_count > 0:
+            _adjust("MARKET_OPEN_BUY_GUARD_MINUTES", +1,
+                    f"매도 GIVE-UP {giveup_count}건 → 장초 매수 금지 강화")
+
+        # ── 변경사항 없으면 종료 ─────────────────────────────────────────
+        if not changes:
+            self._emit_log(f"[AUTO-TUNE] {today} 파라미터 변경 없음 (현행 설정 유지)")
+            self._log_auto_tune_done_date = today
+            return
+
+        # ── 히스토리 업데이트 및 저장 ─────────────────────────────────
+        history_entry = {
+            "date": today.strftime("%Y-%m-%d"),
+            "changes": [
+                {"param": n, "from": o, "to": nv, "reason": r}
+                for n, o, nv, r in changes
+            ],
+        }
+        history: list = sp.get("history", [])
+        history.append(history_entry)
+        if len(history) > 90:
+            history = history[-90:]
+        sp["history"] = history
+        sp["last_tuned_date"] = today.strftime("%Y-%m-%d")
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as _f:
+                _json.dump(sp, _f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self._emit_log(f"[AUTO-TUNE] strategy_params.json 저장 실패: {e}")
+            return
+
+        # ── autofix 로그 파일 작성 ───────────────────────────────────────
+        fix_lines = [
+            "=" * 64,
+            f"  [AUTO-TUNE] {today.strftime('%Y-%m-%d')} 자동 파라미터 조정",
+            f"  실행 시각: {datetime.datetime.now().strftime('%H:%M:%S')}",
+            "=" * 64,
+            "",
+            "■ 적용된 변경 사항",
+        ]
+        for nm, ov, nv, rs in changes:
+            note = params.get(nm, {}).get("note", "")
+            fix_lines.append(f"  {nm}")
+            fix_lines.append(f"    {ov}  →  {nv}    ({rs})")
+            if note:
+                fix_lines.append(f"    ※ {note}")
+        fix_lines += [
+            "",
+            "■ 분석 근거",
+            f"  승률 차단 횟수: {win_rate_block_cnt}",
+            f"  전략조건 미충족: {strategy_block_cnt}",
+            f"  현재가 미수신: {no_price_block_cnt}",
+            f"  당일 매수 건수: {n_buy_total}",
+            f"  매도 GIVE-UP: {giveup_count}",
+            "",
+            "■ 주의사항",
+            "  STOP_LOSS_PCT, DAILY_LOSS_HARD_LIMIT_PCT 등 리스크 핵심 파라미터는",
+            "  자동 조정에서 제외됩니다. 수동으로 확인하세요.",
+            "",
+            "=" * 64,
+        ]
+        fix_text = "\n".join(fix_lines)
+        try:
+            fix_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + "_autofix.txt")
+            with open(fix_path, "w", encoding="utf-8") as _f:
+                _f.write(fix_text)
+        except Exception:
+            pass
+
+        # ── git commit ──────────────────────────────────────────────────
+        commit_msg = (
+            f"[auto-tune] {today} 파라미터 자동 조정 "
+            + ", ".join(f"{n}:{o}→{nv}" for n, o, nv, _ in changes)
+        )
+        try:
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+            subprocess.run(
+                ["git", "add", "strategy_params.json"],
+                cwd=repo_dir, capture_output=True, timeout=15
+            )
+            subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                cwd=repo_dir, capture_output=True, timeout=15
+            )
+            self._emit_log(f"[AUTO-TUNE] git commit 완료: {commit_msg[:80]}")
+        except Exception as e:
+            self._emit_log(f"[AUTO-TUNE] git commit 실패: {e}")
+
+        # ── 앱 로그 요약 ────────────────────────────────────────────────
+        change_summary = ", ".join(f"{n}:{o}→{nv}" for n, o, nv, _ in changes)
+        self._emit_log(
+            f"[AUTO-TUNE] {today} 파라미터 {len(changes)}개 조정 완료 — {change_summary}"
+            f"  →  log/{today}_autofix.txt"
+        )
+        self._log_auto_tune_done_date = today
+
     def _maybe_prefetch_news(self) -> None:
         """30분마다 보유·관심 종목 뉴스를 백그라운드 스레드로 미리 가져온다."""
         if not NEWS_SENTIMENT_AVAILABLE:
@@ -5245,6 +5484,7 @@ class TradingEngine:
             self._maybe_periodic_holdings_sync()
             self._emit_daily_report_if_needed()
             self._auto_analyze_daily_log()
+            self._auto_tune_strategy_params()
             return
 
         self._maybe_start_auto_backtest()

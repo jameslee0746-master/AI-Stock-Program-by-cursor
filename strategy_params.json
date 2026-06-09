@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "last_tuned_date": null,
+  "params": {
+    "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
+      "value": 10,
+      "default": 10,
+      "min": 5,
+      "max": 30,
+      "step": 2,
+      "note": "당일 승률 차단 발동에 필요한 최소 매도 횟수 (늘릴수록 차단 완화)"
+    },
+    "DAILY_WIN_RATE_BLOCK_PCT": {
+      "value": 0.20,
+      "default": 0.20,
+      "min": 0.10,
+      "max": 0.40,
+      "step": 0.05,
+      "note": "당일 승률 차단 임계값 (낮출수록 차단 완화)"
+    },
+    "RECENT_LOSS_BLOCK_COUNT": {
+      "value": 5,
+      "default": 5,
+      "min": 2,
+      "max": 10,
+      "step": 1,
+      "note": "최근 N일 손절 횟수 차단 임계값 (늘릴수록 완화)"
+    },
+    "VOL_ENTRY_RATIO_MIN": {
+      "value": 0.88,
+      "default": 0.88,
+      "min": 0.60,
+      "max": 1.20,
+      "step": 0.03,
+      "note": "거래량 평균비 최소 기준 (낮출수록 진입 완화)"
+    },
+    "VOL_ENTRY_GROWTH_MIN": {
+      "value": 0.88,
+      "default": 0.88,
+      "min": 0.60,
+      "max": 1.20,
+      "step": 0.03,
+      "note": "전일대비 거래량 증가 최소 기준 (낮출수록 진입 완화)"
+    },
+    "MA20_ENTRY_GAP_PCT": {
+      "value": -0.0120,
+      "default": -0.0120,
+      "min": -0.0300,
+      "max": -0.0020,
+      "step": 0.0030,
+      "note": "MA20 대비 현재가 최대 허용 이격 하단 (더 음수일수록 완화)"
+    },
+    "AI_PROBA_ENTRY_MIN": {
+      "value": 0.42,
+      "default": 0.42,
+      "min": 0.30,
+      "max": 0.60,
+      "step": 0.02,
+      "note": "AI 상승 확률 최소 문턱 (낮출수록 진입 완화)"
+    },
+    "MARKET_OPEN_BUY_GUARD_MINUTES": {
+      "value": 15,
+      "default": 15,
+      "min": 5,
+      "max": 30,
+      "step": 5,
+      "note": "장 시작 후 신규 매수 금지 분 (줄일수록 완화)"
+    }
+  },
+  "history": []
+}
