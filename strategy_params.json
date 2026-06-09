@@ -65,6 +65,22 @@
       "max": 30,
       "step": 5,
       "note": "장 시작 후 신규 매수 금지 분 (줄일수록 완화)"
+    },
+    "REENTRY_STOP_LOSS_PCT": {
+      "value": -0.015,
+      "default": -0.015,
+      "min": -0.030,
+      "max": -0.005,
+      "step": 0.005,
+      "note": "손절 후 재진입 시 타이트 손절 기준 (절댓값 작을수록 빠른 손절)"
+    },
+    "REENTRY_POSITION_SIZE_FACTOR": {
+      "value": 0.5,
+      "default": 0.5,
+      "min": 0.25,
+      "max": 1.0,
+      "step": 0.1,
+      "note": "재진입 포지션 크기 배율 (1.0=기본과 동일, 0.5=절반)"
     }
   },
   "history": []

@@ -189,6 +189,9 @@ AI_TECH_STRATEGY_ENTRY_FLOOR = float(os.environ.get("AI_TECH_STRATEGY_ENTRY_FLOO
 
 # 실전 손실 제어: 매도 사유 기록, 손절 후 재진입 제한, 약세장/연속손실 매수 축소
 STOP_LOSS_REENTRY_COOLDOWN_SEC = 30 * 60  # 30분 (was 4시간 — 당일 반등 재매수 허용)
+# 손절 후 재진입(reentry) 시 타이트한 스톱 / 포지션 크기 절반 적용
+REENTRY_STOP_LOSS_PCT = -0.015          # 재진입 손절: -1.5% (기본 -3.0%보다 타이트)
+REENTRY_POSITION_SIZE_FACTOR = 0.5     # 재진입 포지션 크기 배율 (기본의 50%)
 RECENT_LOSS_LOOKBACK_DAYS = 7
 RECENT_LOSS_BLOCK_COUNT = 5  # was 2: 7일내 2회 손절 시 차단 → 5회로 완화
 RECENT_LOSS_BLOCK_DAYS = 3
@@ -677,9 +680,20 @@ def _scan_one_symbol_with_yf(code: str) -> Optional[tuple]:
             cond_trend = ma5 >= ma20 * 0.998
             cond_close = close >= ma20 * 0.995
         code6 = str(code).replace(".KS", "").replace(".KQ", "")
-        ratio = (vol3 / vol20)
+        vol_ratio = vol3 / vol20
+
+        # 거래대금(Trading Value) 기반 복합 스코어
+        # TV = 종가 × 거래량 → 실제 수급 강도를 더 정확히 반영
+        n20 = min(20, len(closes), len(volumes))
+        n3 = min(3, len(closes), len(volumes))
+        tv3 = sum(closes[-n3 + i] * volumes[-n3 + i] for i in range(n3)) / max(1, n3)
+        tv20 = sum(closes[-n20 + i] * volumes[-n20 + i] for i in range(n20)) / max(1, n20)
+        tv_ratio = (tv3 / tv20) if tv20 > 0 else vol_ratio
+        # 복합 스코어: 거래량 비율 40% + 거래대금 비율 60%
+        score = vol_ratio * 0.4 + tv_ratio * 0.6
+
         passed_second = bool(cond_vol and cond_trend and cond_close)
-        return code6, ratio, passed_first, passed_second
+        return code6, score, passed_first, passed_second
     except Exception as e:
         _log(f"[SCAN] rule eval error {code}: {e}")
         return None
@@ -2293,6 +2307,9 @@ class TradingEngine:
         self._log_file_handle: Optional[object] = None  # 일별 로그 파일 핸들
         self._log_analysis_done_date: Optional[datetime.date] = None  # 자동 분석 실행 날짜
         self._log_auto_tune_done_date: Optional[datetime.date] = None  # 자동 파라미터 튜닝 실행 날짜
+        # 손절 후 재진입 추적: 손절 체결가 기록 → 해당가 회복 시에만 재진입 허용
+        self._stop_loss_prices: Dict[str, float] = {}   # code → 손절 체결가
+        self._reentry_codes: set = set()                # 현재 재진입 모드인 종목
         self._auto_bt_running = False
         self._auto_bt_last_at: Optional[datetime.datetime] = None
         self._auto_bt_state: Dict[str, object] = {
@@ -2618,6 +2635,9 @@ class TradingEngine:
         if max_single_order > 0:
             target_budget = min(target_budget, max_single_order)
         qty = int(target_budget // price)
+        # 재진입 포지션은 리스크 절반 (손절가 미회복 상태에서 재진입이므로 신중하게)
+        if code is not None and code in getattr(self, "_reentry_codes", set()):
+            qty = max(1, int(qty * float(REENTRY_POSITION_SIZE_FACTOR)))
         return max(1, qty) if qty > 0 else 0
 
     def _append_order_event(
@@ -3111,13 +3131,21 @@ class TradingEngine:
         threading.Thread(target=_worker, daemon=True).start()
 
     def _risk_pcts_for_code(self, code: str) -> tuple[float, float]:
+        # 재진입 포지션은 기본 손절보다 타이트하게 (-1.5%)
+        is_reentry = code in getattr(self, "_reentry_codes", set())
+
         if not bool(USE_ATR_RISK):
-            return float(STOP_LOSS_PCT), float(TAKE_PROFIT_PCT)
+            sl = float(REENTRY_STOP_LOSS_PCT) if is_reentry else float(STOP_LOSS_PCT)
+            return sl, float(TAKE_PROFIT_PCT)
         atr_pct = float((self.ma.get(code) or {}).get("atr_pct", 0.0) or 0.0)
         if atr_pct <= 0:
-            return float(STOP_LOSS_PCT), float(TAKE_PROFIT_PCT)
+            sl = float(REENTRY_STOP_LOSS_PCT) if is_reentry else float(STOP_LOSS_PCT)
+            return sl, float(TAKE_PROFIT_PCT)
         stop_abs = min(float(ATR_STOP_MAX_PCT), max(float(ATR_STOP_MIN_PCT), atr_pct * float(ATR_STOP_MULT)))
         take_abs = min(float(ATR_TAKE_MAX_PCT), max(float(ATR_TAKE_MIN_PCT), atr_pct * float(ATR_TAKE_MULT)))
+        # 재진입은 ATR 손절도 REENTRY_STOP_LOSS_PCT 이하로 제한
+        if is_reentry:
+            stop_abs = min(stop_abs, abs(float(REENTRY_STOP_LOSS_PCT)))
         return -stop_abs, take_abs
 
     def _ai_features_from_cached(self, code: str, cur_price: float) -> Optional[List[float]]:
@@ -3983,6 +4011,13 @@ class TradingEngine:
             remain = int((cooldown_until - datetime.datetime.now()).total_seconds())
             self._log_buy_block(code, f"매수 timeout 쿨다운({remain}s)")
             return False
+        # 손절 후 재진입: 현재가가 손절 체결가를 회복해야 재매수 허용
+        if code in self._reentry_codes:
+            stop_px = self._stop_loss_prices.get(code, 0.0)
+            cur_px = float(self.current_price.get(code) or 0.0)
+            if stop_px > 0 and cur_px > 0 and cur_px <= stop_px:
+                self._log_buy_block(code, f"손절가 미회복(현재{int(cur_px)} ≤ 손절{int(stop_px)})")
+                return False
         today_loss_pct = self._today_realized_pnl_pct()
         if today_loss_pct <= float(DAILY_LOSS_HARD_LIMIT_PCT):
             self._log_buy_block(code, f"당일 손실한도 초과({today_loss_pct*100:.2f}%)")
@@ -4668,6 +4703,14 @@ class TradingEngine:
                 self.buy_cooldown_until[code] = now_ts + datetime.timedelta(
                     seconds=float(STOP_LOSS_REENTRY_COOLDOWN_SEC)
                 )
+                # 재진입 모드 진입: 손절 체결가 저장, 해당가 회복 후에만 재매수 허용
+                self._stop_loss_prices[code] = float(sell_price_f)
+                self._reentry_codes.add(code)
+            elif sell_reason in ("take_profit", "trailing_stop", "ai_profit_exit",
+                                 "ai_trailing_exit", "partial_take_profit"):
+                # 수익 청산 시 재진입 모드 해제
+                self._reentry_codes.discard(code)
+                self._stop_loss_prices.pop(code, None)
             self._append_order_event(
                 event="ORDER_FILLED",
                 code=code,
