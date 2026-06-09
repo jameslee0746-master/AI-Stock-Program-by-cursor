@@ -2307,6 +2307,7 @@ class TradingEngine:
         self._log_file_handle: Optional[object] = None  # 일별 로그 파일 핸들
         self._log_analysis_done_date: Optional[datetime.date] = None  # 자동 분석 실행 날짜
         self._log_auto_tune_done_date: Optional[datetime.date] = None  # 자동 파라미터 튜닝 실행 날짜
+        self._daily_strategy_done_date: Optional[datetime.date] = None  # 일일 전략 패키지 적용 날짜
         # 손절 후 재진입 추적: 손절 체결가 기록 → 해당가 회복 시에만 재진입 허용
         self._stop_loss_prices: Dict[str, float] = {}   # code → 손절 체결가
         self._reentry_codes: set = set()                # 현재 재진입 모드인 종목
@@ -5458,6 +5459,303 @@ class TradingEngine:
         )
         self._log_auto_tune_done_date = today
 
+    # ──────────────────────────────────────────────────────────────────────────
+    def _evaluate_yesterday_strategy(
+        self,
+        schedule: dict,
+        today_analysis_text: str,
+    ) -> bool:
+        """어제 적용한 전략 패키지가 효과적이었는지 평가한다.
+        평가 기준:
+          - 당일 매수 건수가 이전보다 ≥ 0 (차단이 줄지 않음은 실패)
+          - 'steady_state' 전략은 항상 유지
+          - revert_on_loss=True인 전략은 매수 0건 or 손실한도 초과 시 롤백
+        Returns True if the strategy should be kept, False if it should be reverted.
+        """
+        import re as _re
+        current = schedule.get("current")
+        if not current:
+            return True
+
+        if current.get("strategy_id") == "steady_state":
+            return True
+
+        # 오늘 분석에서 매수 건수 파악
+        buy_match = _re.search(r"합계\s+(\d+)건\s+\d+건\s+\d+건", today_analysis_text)
+        n_buy_today = int(buy_match.group(1)) if buy_match else 0
+
+        daily_loss = "당일 손실한도 초과" in today_analysis_text
+        applied_strategy = current.get("strategy_id", "")
+
+        # 어제 매수가 0이었는데 오늘도 0 → 실패로 보고 롤백
+        if current.get("revert_on_loss", False):
+            if n_buy_today == 0 or daily_loss:
+                self._emit_log(
+                    f"[DAILY-STRATEGY] '{applied_strategy}' 효과 없음 "
+                    f"(매수{n_buy_today}건, 손실한도초과={daily_loss}) → 롤백 예정"
+                )
+                return False
+
+        self._emit_log(
+            f"[DAILY-STRATEGY] '{applied_strategy}' 유지 (매수{n_buy_today}건)"
+        )
+        return True
+
+    def _select_and_apply_daily_strategy(self) -> None:
+        """하루 1개 전략 패키지를 자동 선택·적용한다.
+        - _auto_tune_strategy_params() 완료(21:30) 후 하루 1회 실행
+        - strategy_library.json 에서 오늘 로그 패턴에 맞는 전략을 선택
+        - strategy_params.json 에 반영
+        - strategy_schedule.json 에 이력 기록
+        - log/YYYY-MM-DD_strategy.txt 로 상세 기록
+        - git commit
+        """
+        today = datetime.date.today()
+        if getattr(self, "_daily_strategy_done_date", None) == today:
+            return
+        if self._log_auto_tune_done_date != today:
+            return
+        if QTime.currentTime() < QTime(21, 30, 0):
+            return
+
+        import json as _json
+        import re as _re
+        import subprocess
+
+        root = os.path.dirname(os.path.abspath(__file__))
+        log_dir = os.path.join(root, "log")
+        lib_path = os.path.join(root, "strategy_library.json")
+        sched_path = os.path.join(root, "strategy_schedule.json")
+        sp_path = os.path.join(root, "strategy_params.json")
+        analysis_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + "_analysis.txt")
+
+        for p in (lib_path, analysis_path, sp_path):
+            if not os.path.exists(p):
+                self._emit_log(f"[DAILY-STRATEGY] 파일 없음: {p}")
+                return
+
+        try:
+            with open(lib_path, "r", encoding="utf-8") as f:
+                library = _json.load(f)
+            with open(sched_path, "r", encoding="utf-8") as f:
+                schedule = _json.load(f)
+            with open(sp_path, "r", encoding="utf-8") as f:
+                sp = _json.load(f)
+            with open(analysis_path, "r", encoding="utf-8") as f:
+                analysis_text = f.read()
+        except Exception as e:
+            self._emit_log(f"[DAILY-STRATEGY] 파일 로드 실패: {e}")
+            return
+
+        # ── 1. 어제 전략 평가 / 롤백 ───────────────────────────────────────
+        keep_current = self._evaluate_yesterday_strategy(schedule, analysis_text)
+        if not keep_current:
+            # 어제 적용한 변경사항 롤백
+            prev = schedule.get("current", {})
+            prev_params = prev.get("prev_values", {})
+            sp_params = sp.get("params", {})
+            for k, v in prev_params.items():
+                if k in sp_params:
+                    sp_params[k]["value"] = v
+            self._emit_log(
+                f"[DAILY-STRATEGY] 롤백 완료: {list(prev_params.keys())}"
+            )
+            # 히스토리에 실패로 기록
+            h_entry = dict(prev)
+            h_entry["result"] = "reverted"
+            schedule.setdefault("history", []).append(h_entry)
+            schedule["current"] = None
+
+        # ── 2. 오늘 패턴 분석 ────────────────────────────────────────────
+        block_counts: dict = {}
+        for m in _re.finditer(r"\d+\.\s+(.+?):\s+(\d+)회", analysis_text):
+            block_counts[m.group(1).strip()] = int(m.group(2))
+
+        win_rate_block = block_counts.get("당일 승률 저조", 0)
+        strategy_block = block_counts.get("전략조건 미충족", 0)
+        no_price_block = block_counts.get("현재가 미수신", 0)
+        daily_loss_block = block_counts.get("당일 손실한도 초과", 0)
+
+        giveup_match = _re.search(r"GIVE-UP (\d+)건", analysis_text)
+        giveup_count = int(giveup_match.group(1)) if giveup_match else 0
+
+        timeout_match = _re.search(r"timeout 총 (\d+)회", analysis_text)
+        timeout_count = int(timeout_match.group(1)) if timeout_match else 0
+
+        buy_match = _re.search(r"합계\s+(\d+)건\s+\d+건\s+\d+건", analysis_text)
+        n_buy = int(buy_match.group(1)) if buy_match else 0
+
+        # 최근 적용된 전략 ID 목록 (중복 방지)
+        recent_ids = {
+            h.get("strategy_id") for h in (schedule.get("history") or [])[-7:]
+        }
+
+        # ── 3. 전략 선택 ──────────────────────────────────────────────────
+        ctx = {
+            "win_rate_block": win_rate_block,
+            "strategy_block": strategy_block,
+            "no_price_block": no_price_block,
+            "daily_loss_block": daily_loss_block,
+            "giveup_count": giveup_count,
+            "timeout_count": timeout_count,
+            "n_buy": n_buy,
+        }
+
+        def _matches(trigger: str) -> bool:
+            if trigger == "default":
+                return True
+            try:
+                return bool(eval(  # noqa: S307
+                    trigger,
+                    {"__builtins__": {}},
+                    ctx,
+                ))
+            except Exception:
+                return False
+
+        candidates = [
+            s for s in library.get("strategies", [])
+            if s.get("id") != "steady_state"
+            and s.get("id") not in recent_ids
+            and _matches(s.get("trigger", "default"))
+        ]
+        candidates.sort(key=lambda s: s.get("priority", 0), reverse=True)
+
+        if candidates:
+            chosen = candidates[0]
+        else:
+            chosen = next(
+                (s for s in library["strategies"] if s["id"] == "steady_state"),
+                {"id": "steady_state", "name": "안정 기조 유지", "params": {},
+                 "revert_on_loss": False}
+            )
+
+        # ── 4. 파라미터 적용 ──────────────────────────────────────────────
+        sp_params = sp.get("params", {})
+        applied_changes: dict = {}
+        prev_values: dict = {}
+
+        for pname, meta in (chosen.get("params") or {}).items():
+            if pname not in sp_params:
+                continue
+            p = sp_params[pname]
+            old_v = p["value"]
+            delta = float(meta.get("delta", 0))
+            new_v = old_v + delta
+            new_v = max(p.get("min", new_v), min(p.get("max", new_v), new_v))
+            new_v = round(new_v, 6) if isinstance(new_v, float) else int(new_v)
+            if new_v == old_v:
+                continue
+            prev_values[pname] = old_v
+            sp_params[pname]["value"] = new_v
+            applied_changes[pname] = (old_v, new_v)
+
+        # ── 5. 스케줄 업데이트 및 저장 ───────────────────────────────────
+        new_current = {
+            "strategy_id": chosen["id"],
+            "strategy_name": chosen.get("name", ""),
+            "applied_date": today.strftime("%Y-%m-%d"),
+            "revert_on_loss": chosen.get("revert_on_loss", False),
+            "prev_values": prev_values,
+            "changes": {k: {"from": v[0], "to": v[1]} for k, v in applied_changes.items()},
+            "context": ctx,
+        }
+        if keep_current and schedule.get("current"):
+            prev_cur = dict(schedule["current"])
+            prev_cur["result"] = "kept"
+            schedule.setdefault("history", []).append(prev_cur)
+
+        schedule["current"] = new_current
+        history = schedule.get("history", [])
+        if len(history) > 90:
+            history = history[-90:]
+        schedule["history"] = history
+
+        try:
+            with open(sp_path, "w", encoding="utf-8") as f:
+                _json.dump(sp, f, ensure_ascii=False, indent=2)
+            with open(sched_path, "w", encoding="utf-8") as f:
+                _json.dump(schedule, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self._emit_log(f"[DAILY-STRATEGY] 저장 실패: {e}")
+            return
+
+        # ── 6. 상세 로그 파일 작성 ───────────────────────────────────────
+        sep = "=" * 64
+        log_lines = [
+            sep,
+            f"  [DAILY-STRATEGY] {today.strftime('%Y-%m-%d')} 일일 전략 업데이트",
+            f"  실행 시각: {datetime.datetime.now().strftime('%H:%M:%S')}",
+            sep,
+            "",
+            f"■ 선택된 전략: [{chosen['id']}] {chosen.get('name', '')}",
+            f"  설명: {chosen.get('description', '')}",
+            f"  트리거: {chosen.get('trigger', '')}",
+            "",
+            "■ 오늘 분석 수치",
+            f"  승률 차단: {win_rate_block}회  /  전략조건 미충족: {strategy_block}회",
+            f"  현재가 미수신: {no_price_block}회  /  손실한도 초과: {daily_loss_block}회",
+            f"  GIVE-UP: {giveup_count}건  /  매도 timeout: {timeout_count}회",
+            f"  당일 매수: {n_buy}건",
+            "",
+            "■ 파라미터 변경",
+        ]
+        if applied_changes:
+            for pname, (ov, nv) in applied_changes.items():
+                note = sp_params.get(pname, {}).get("note", "")
+                log_lines.append(f"  {pname}: {ov} → {nv}  ({note})")
+        else:
+            log_lines.append("  변경 없음 (이미 경계값이거나 steady_state)")
+
+        log_lines += [
+            "",
+            "■ 내일 평가 기준",
+            f"  revert_on_loss={chosen.get('revert_on_loss', False)} — "
+            + ("매수 0건 또는 손실한도 초과 시 자동 롤백" if chosen.get("revert_on_loss") else "성과 무관 유지"),
+            "",
+            "■ 최근 7일 전략 이력",
+        ]
+        for h in (schedule.get("history") or [])[-7:]:
+            log_lines.append(
+                f"  {h.get('applied_date','-')} [{h.get('strategy_id','-')}] "
+                f"{h.get('strategy_name','')} → {h.get('result','pending')}"
+            )
+        log_lines += ["", sep, ""]
+
+        strategy_log_path = os.path.join(log_dir, today.strftime("%Y-%m-%d") + "_strategy.txt")
+        try:
+            with open(strategy_log_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(log_lines))
+        except Exception:
+            pass
+
+        # ── 7. git commit ──────────────────────────────────────────────────
+        change_msg = (
+            ", ".join(f"{k}:{v[0]}→{v[1]}" for k, v in applied_changes.items())
+            if applied_changes else "파라미터 변경 없음"
+        )
+        commit_msg = (
+            f"[daily-strategy] {today} [{chosen['id']}] {chosen.get('name','')} — {change_msg}"
+        )
+        try:
+            subprocess.run(
+                ["git", "add", "strategy_params.json", "strategy_schedule.json"],
+                cwd=root, capture_output=True, timeout=15
+            )
+            subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                cwd=root, capture_output=True, timeout=15
+            )
+            self._emit_log(f"[DAILY-STRATEGY] git commit: {commit_msg[:90]}")
+        except Exception as e:
+            self._emit_log(f"[DAILY-STRATEGY] git commit 실패: {e}")
+
+        self._emit_log(
+            f"[DAILY-STRATEGY] {today} 전략 적용 완료: [{chosen['id']}] {chosen.get('name','')} "
+            f"→ log/{today}_strategy.txt"
+        )
+        self._daily_strategy_done_date = today
+
     def _maybe_prefetch_news(self) -> None:
         """30분마다 보유·관심 종목 뉴스를 백그라운드 스레드로 미리 가져온다."""
         if not NEWS_SENTIMENT_AVAILABLE:
@@ -5528,6 +5826,7 @@ class TradingEngine:
             self._emit_daily_report_if_needed()
             self._auto_analyze_daily_log()
             self._auto_tune_strategy_params()
+            self._select_and_apply_daily_strategy()
             return
 
         self._maybe_start_auto_backtest()
