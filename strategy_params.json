@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_tuned_date": null,
+  "last_tuned_date": "2026-06-10",
   "params": {
     "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
       "value": 10,
@@ -11,10 +11,10 @@
       "note": "당일 승률 차단 발동에 필요한 최소 매도 횟수 (늘릴수록 차단 완화)"
     },
     "DAILY_WIN_RATE_BLOCK_PCT": {
-      "value": 0.20,
-      "default": 0.20,
-      "min": 0.10,
-      "max": 0.40,
+      "value": 0.2,
+      "default": 0.2,
+      "min": 0.1,
+      "max": 0.4,
       "step": 0.05,
       "note": "당일 승률 차단 임계값 (낮출수록 차단 완화)"
     },
@@ -27,39 +27,39 @@
       "note": "최근 N일 손절 횟수 차단 임계값 (늘릴수록 완화)"
     },
     "VOL_ENTRY_RATIO_MIN": {
-      "value": 0.88,
+      "value": 0.70,
       "default": 0.88,
-      "min": 0.60,
-      "max": 1.20,
+      "min": 0.6,
+      "max": 1.2,
       "step": 0.03,
       "note": "거래량 평균비 최소 기준 (낮출수록 진입 완화)"
     },
     "VOL_ENTRY_GROWTH_MIN": {
-      "value": 0.88,
+      "value": 0.70,
       "default": 0.88,
-      "min": 0.60,
-      "max": 1.20,
+      "min": 0.6,
+      "max": 1.2,
       "step": 0.03,
       "note": "전일대비 거래량 증가 최소 기준 (낮출수록 진입 완화)"
     },
     "MA20_ENTRY_GAP_PCT": {
-      "value": -0.0120,
-      "default": -0.0120,
-      "min": -0.0300,
-      "max": -0.0020,
-      "step": 0.0030,
+      "value": -0.012,
+      "default": -0.012,
+      "min": -0.03,
+      "max": -0.002,
+      "step": 0.003,
       "note": "MA20 대비 현재가 최대 허용 이격 하단 (더 음수일수록 완화)"
     },
     "AI_PROBA_ENTRY_MIN": {
-      "value": 0.42,
+      "value": 0.4,
       "default": 0.42,
-      "min": 0.30,
-      "max": 0.60,
+      "min": 0.3,
+      "max": 0.6,
       "step": 0.02,
       "note": "AI 상승 확률 최소 문턱 (낮출수록 진입 완화)"
     },
     "MARKET_OPEN_BUY_GUARD_MINUTES": {
-      "value": 15,
+      "value": 25.0,
       "default": 15,
       "min": 5,
       "max": 30,
@@ -67,9 +67,9 @@
       "note": "장 시작 후 신규 매수 금지 분 (줄일수록 완화)"
     },
     "REENTRY_STOP_LOSS_PCT": {
-      "value": -0.015,
+      "value": -0.02,
       "default": -0.015,
-      "min": -0.030,
+      "min": -0.03,
       "max": -0.005,
       "step": 0.005,
       "note": "손절 후 재진입 시 타이트 손절 기준 (절댓값 작을수록 빠른 손절)"
@@ -83,5 +83,35 @@
       "note": "재진입 포지션 크기 배율 (1.0=기본과 동일, 0.5=절반)"
     }
   },
-  "history": []
+  "history": [
+    {
+      "date": "2026-06-10",
+      "changes": [
+        {
+          "param": "AI_PROBA_ENTRY_MIN",
+          "from": 0.42,
+          "to": 0.4,
+          "reason": "현재가 미수신 1680회 → AI 문턱 소폭 완화 (자동)"
+        },
+        {
+          "param": "MARKET_OPEN_BUY_GUARD_MINUTES",
+          "from": 15,
+          "to": 20,
+          "reason": "매도 GIVE-UP 1건 → 장초 매수 금지 강화 (자동)"
+        },
+        {
+          "param": "VOL_ENTRY_RATIO_MIN",
+          "from": 0.88,
+          "to": 0.70,
+          "reason": "bear 장 전략조건 미충족 27046회 → 거래량 진입 기준 대폭 완화 (수동)"
+        },
+        {
+          "param": "VOL_ENTRY_GROWTH_MIN",
+          "from": 0.88,
+          "to": 0.70,
+          "reason": "bear 장 전략조건 미충족 27046회 → 거래량 증가 기준 대폭 완화 (수동)"
+        }
+      ]
+    }
+  ]
 }
