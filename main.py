@@ -5317,16 +5317,37 @@ class TradingEngine:
         changes: list = []  # (param_name, old_val, new_val, reason)
 
         def _adjust(name: str, direction: int, reason: str) -> None:
-            """direction: +1 = 올림(완화 방향), -1 = 내림(강화 방향)"""
+            """direction: +1 = 올림(완화 방향), -1 = 내림(강화 방향)
+            auto_tune_floor / auto_tune_ceil 필드가 있으면 자동 튜닝의 누적 조정 한계를 제한한다.
+            같은 방향으로 최근 5일 내 3회 이상 조정된 경우 추가 조정을 건너뛴다.
+            """
             if name not in params:
                 return
             meta = params[name]
             old_v = meta["value"]
             step = meta.get("step", 1)
             new_v = old_v + direction * step
+            # auto_tune_floor/ceil: 자동 튜닝이 건드릴 수 있는 안전 범위
+            if direction < 0 and "auto_tune_floor" in meta:
+                new_v = max(float(meta["auto_tune_floor"]), new_v)
+            if direction > 0 and "auto_tune_ceil" in meta:
+                new_v = min(float(meta["auto_tune_ceil"]), new_v)
             new_v = max(meta["min"], min(meta["max"], new_v))
             if new_v == old_v:
                 return
+            # 최근 5일 내 같은 방향 조정 횟수 확인 (과도한 편향 방지)
+            recent = [
+                c for c in (sp.get("history") or [])[-5:]
+                for c in c.get("changes", [])
+                if c.get("param") == name
+            ]
+            same_dir = sum(
+                1 for c in recent
+                if (direction < 0 and c.get("to", c.get("from", 0)) < c.get("from", 0))
+                or (direction > 0 and c.get("to", c.get("from", 0)) > c.get("from", 0))
+            )
+            if same_dir >= 3:
+                return  # 같은 방향으로 이미 3회 조정 → 건너뜀
             meta["value"] = round(new_v, 6) if isinstance(new_v, float) else new_v
             changes.append((name, old_v, new_v, reason))
 
