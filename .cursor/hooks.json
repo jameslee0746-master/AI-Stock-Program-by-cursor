@@ -1,22 +1,11 @@
 {
   "version": 1,
   "hooks": {
-    "afterFileEdit": [
+    "sessionStart": [
       {
-        "command": "python .cursor/hooks/git_auto_commit.py",
-        "timeout": 120
-      }
-    ],
-    "afterTabFileEdit": [
-      {
-        "command": "python .cursor/hooks/git_auto_commit.py",
-        "timeout": 120
-      }
-    ],
-    "stop": [
-      {
-        "command": "python .cursor/hooks/git_auto_commit.py --session-end",
-        "timeout": 120
+        "command": "python .cursor/hooks/daily_log_analysis.py",
+        "timeout": 10,
+        "failClosed": false
       }
     ]
   }
