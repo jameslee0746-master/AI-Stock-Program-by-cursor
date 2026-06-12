@@ -5313,6 +5313,12 @@ class TradingEngine:
             self._emit_log(f"[AUTO-TUNE] strategy_params.json 로드 실패: {e}")
             return
 
+        # 보수 모드(conservative)에서는 완화 방향 자동 조정 금지
+        _conservative = str(sp.get("_mode", "")).lower() == "conservative"
+        if _conservative:
+            self._emit_log("[AUTO-TUNE] 보수 모드 — 완화 방향 자동 조정 건너뜀 (강화 방향만 허용)")
+
+
         params = sp.get("params", {})
         changes: list = []  # (param_name, old_val, new_val, reason)
 
@@ -5320,7 +5326,10 @@ class TradingEngine:
             """direction: +1 = 올림(완화 방향), -1 = 내림(강화 방향)
             auto_tune_floor / auto_tune_ceil 필드가 있으면 자동 튜닝의 누적 조정 한계를 제한한다.
             같은 방향으로 최근 5일 내 3회 이상 조정된 경우 추가 조정을 건너뛴다.
+            보수 모드(_mode=conservative)에서는 완화 방향(+1) 조정을 금지한다.
             """
+            if _conservative and direction > 0:
+                return  # 보수 모드: 완화 방향 조정 금지
             if name not in params:
                 return
             meta = params[name]
@@ -5634,13 +5643,27 @@ class TradingEngine:
             except Exception:
                 return False
 
+        _conservative_mode = str(sp.get("_mode", "")).lower() == "conservative"
+
+        def _strategy_net_direction(strat: dict) -> int:
+            """전략의 델타 합계로 완화(+)/강화(-) 방향 판별."""
+            return sum(
+                1 if float(m.get("delta", 0)) > 0 else (-1 if float(m.get("delta", 0)) < 0 else 0)
+                for m in strat.get("params", {}).values()
+            )
+
         candidates = [
             s for s in library.get("strategies", [])
             if s.get("id") != "steady_state"
             and s.get("id") not in recent_ids
             and _matches(s.get("trigger", "default"))
+            # 보수 모드에서는 완화 방향 전략(delta 합이 양수) 제외
+            and not (_conservative_mode and _strategy_net_direction(s) > 0)
         ]
         candidates.sort(key=lambda s: s.get("priority", 0), reverse=True)
+
+        if _conservative_mode:
+            self._emit_log("[DAILY-STRATEGY] 보수 모드 — 완화 방향 전략 제외 후 선택")
 
         if candidates:
             chosen = candidates[0]
