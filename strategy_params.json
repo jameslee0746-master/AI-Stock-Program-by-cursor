@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "last_tuned_date": "2026-06-12",
+  "last_tuned_date": "2026-06-15",
   "_mode": "conservative",
   "params": {
     "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
-      "value": 5,
+      "value": 7.0,
       "default": 10,
       "min": 5,
       "max": 30,
@@ -13,8 +13,8 @@
       "note": "당일 승률 차단 발동에 필요한 최소 매도 횟수 — 보수 모드 auto_tune_ceil 제한"
     },
     "DAILY_WIN_RATE_BLOCK_PCT": {
-      "value": 0.35,
-      "default": 0.20,
+      "value": 0.3,
+      "default": 0.2,
       "min": 0.1,
       "max": 0.4,
       "step": 0.05,
@@ -54,7 +54,7 @@
       "note": "MA20 이격 허용 상단 축소 — MA20 근처 종목만 진입"
     },
     "AI_PROBA_ENTRY_MIN": {
-      "value": 0.42,
+      "value": 0.38,
       "default": 0.42,
       "min": 0.3,
       "max": 0.6,
@@ -187,6 +187,34 @@
           "from": 20,
           "to": 25.0,
           "reason": "매도 GIVE-UP 1건 → 장초 매수 금지 강화"
+        }
+      ]
+    },
+    {
+      "date": "2026-06-12",
+      "changes": [
+        {
+          "param": "AI_PROBA_ENTRY_MIN",
+          "from": 0.42,
+          "to": 0.39999999999999997,
+          "reason": "현재가 미수신 1513회 → AI 문턱 소폭 완화"
+        }
+      ]
+    },
+    {
+      "date": "2026-06-15",
+      "changes": [
+        {
+          "param": "DAILY_WIN_RATE_BLOCK_MIN_SELLS",
+          "from": 9.0,
+          "to": 7.0,
+          "reason": "승률 차단 없음 + 매수 3건 → MIN_SELLS 소폭 강화"
+        },
+        {
+          "param": "AI_PROBA_ENTRY_MIN",
+          "from": 0.4,
+          "to": 0.38,
+          "reason": "현재가 미수신 1486회 → AI 문턱 소폭 완화"
         }
       ]
     }
