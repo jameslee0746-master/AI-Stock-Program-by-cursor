@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "last_tuned_date": "2026-06-15",
+  "last_tuned_date": "2026-06-18",
   "_mode": "conservative",
   "params": {
     "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
-      "value": 7.0,
+      "value": 5,
       "default": 10,
       "min": 5,
       "max": 30,
@@ -63,7 +63,7 @@
       "note": "AI 상승 확률 최소 문턱 상향 — 44% 이상만 진입 (보수 강화)"
     },
     "MARKET_OPEN_BUY_GUARD_MINUTES": {
-      "value": 25.0,
+      "value": 30,
       "default": 15,
       "min": 5,
       "max": 30,
@@ -97,7 +97,7 @@
       "note": "동시 보유 최대 종목 수 축소 — 2종목으로 분산 최소화"
     },
     "REENTRY_STOP_LOSS_PCT": {
-      "value": -0.015,
+      "value": -0.025,
       "default": -0.015,
       "min": -0.03,
       "max": -0.005,
@@ -105,7 +105,7 @@
       "note": "손절 후 재진입 시 손절 기준 (-1.5%)"
     },
     "REENTRY_POSITION_SIZE_FACTOR": {
-      "value": 0.4,
+      "value": 0.3,
       "default": 0.5,
       "min": 0.25,
       "max": 1.0,
@@ -215,6 +215,17 @@
           "from": 0.4,
           "to": 0.38,
           "reason": "현재가 미수신 1486회 → AI 문턱 소폭 완화"
+        }
+      ]
+    },
+    {
+      "date": "2026-06-18",
+      "changes": [
+        {
+          "param": "DAILY_WIN_RATE_BLOCK_MIN_SELLS",
+          "from": 7.0,
+          "to": 5,
+          "reason": "승률 차단 없음 + 매수 4건 → MIN_SELLS 소폭 강화"
         }
       ]
     }

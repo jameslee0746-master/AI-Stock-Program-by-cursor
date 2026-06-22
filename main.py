@@ -3694,11 +3694,93 @@ class TradingEngine:
                 # 실패해도 다음 종목부터 계속 진행
                 pass
 
+    def _positions_from_ledger(self) -> Optional[Dict[str, Dict[str, int]]]:
+        """거래 CSV(FIFO)로 미청산 잔고를 재구성한다. 실패 시 None."""
+        tracker = getattr(self, "trade_tracker", None)
+        if tracker is None:
+            return None
+        try:
+            ledger_map, _oversell = fifo_open_positions_from_records(tracker.all_records())
+        except Exception:
+            return None
+        out: Dict[str, Dict[str, int]] = {}
+        for code, lg in (ledger_map or {}).items():
+            q = int(round(float((lg or {}).get("qty", 0.0) or 0.0)))
+            if q <= 0:
+                continue
+            avg = int(round(float((lg or {}).get("avg_price", 0.0) or 0.0)))
+            out[str(code).strip()] = {"qty": q, "avg_price": max(1, avg)}
+        return out
+
+    def _positions_brief(self, positions: Dict[str, Dict[str, int]]) -> str:
+        hold_items = sorted(
+            (
+                (c, int((p or {}).get("qty", 0) or 0))
+                for c, p in (positions or {}).items()
+                if int((p or {}).get("qty", 0) or 0) > 0
+            ),
+            key=lambda x: x[0],
+        )
+        return ", ".join(f"{c}:{q}" for c, q in hold_items)
+
+    def _commit_positions_snapshot(self, positions: Dict[str, Dict[str, int]], source: str) -> None:
+        """잔고 스냅샷을 positions에 반영하고 후처리(로그·종목목록·RECONCILE)를 수행한다."""
+        brief = self._positions_brief(positions)
+        if brief != self._last_holdings_brief:
+            self._emit_log(f"[HOLDINGS] {source} 보유수량 요약 {brief or '-'}")
+            self._last_holdings_brief = brief
+        self.positions = dict(positions or {})
+        self.last_holdings_tr_rows = len(self.positions)
+        if self.positions:
+            merged_codes = list(
+                dict.fromkeys(list(self.stock_codes or []) + list(self.positions.keys()))
+            )
+            self.stock_codes = merged_codes
+            for c in merged_codes:
+                self.pending_buy.setdefault(c, False)
+                self.pending_sell.setdefault(c, False)
+                self.tp_reached.setdefault(c, False)
+        self._reconcile_holdings_with_trade_log()
+
+    def _adjust_position_on_chejan_fill(self, code: str, side: str, qty: int, price: int) -> None:
+        """체결 통보 직후 내부 positions를 즉시 갱신한다(TR 지연 시 GUI 유령잔고 방지)."""
+        if qty <= 0 or price <= 0:
+            return
+        pos = dict(self.positions.get(code) or {"qty": 0, "avg_price": 0})
+        old_q = int(pos.get("qty", 0) or 0)
+        old_avg = int(pos.get("avg_price", 0) or 0)
+        side_u = str(side).upper()
+        if side_u == "BUY":
+            new_q = old_q + int(qty)
+            if old_q > 0 and old_avg > 0:
+                new_avg = int(round((old_avg * old_q + int(price) * int(qty)) / float(new_q)))
+            else:
+                new_avg = int(price)
+            self.positions[code] = {"qty": new_q, "avg_price": max(1, new_avg)}
+            hold_q = new_q
+        elif side_u == "SELL":
+            new_q = max(0, old_q - int(qty))
+            if new_q <= 0:
+                self.positions.pop(code, None)
+            else:
+                self.positions[code] = {"qty": new_q, "avg_price": old_avg}
+            hold_q = new_q
+        else:
+            return
+        self._emit_log(
+            f"[POSITION] chejan {side_u} {code} fill={qty}@{price} -> hold={hold_q}"
+        )
+
     def sync_portfolio(self, password: str = "") -> None:
         # opw00018이 실패할 경우를 대비해 예외 처리합니다.
         try:
             data = self.kiwoom.request_holdings(self.account, password=password)
             if data is None:
+                ledger_pos = self._positions_from_ledger()
+                if ledger_pos is not None:
+                    if ledger_pos != (self.positions or {}):
+                        self._commit_positions_snapshot(ledger_pos, "CSV원장(TR미응답)")
+                    return
                 now = datetime.datetime.now()
                 should_warn = (
                     self._last_positions_sync_warn_at is None
@@ -3706,7 +3788,7 @@ class TradingEngine:
                 )
                 if should_warn:
                     self._emit_log(
-                        "[HOLDINGS] 잔고조회 TR 미응답(타임아웃 등). 기존 보유(positions)는 유지합니다."
+                        "[HOLDINGS] 잔고조회 TR 미응답(타임아웃 등). CSV 원장도 없어 기존 보유 유지."
                     )
                     self._last_positions_sync_warn_at = now
                 return
@@ -3731,50 +3813,43 @@ class TradingEngine:
                                 self._emit_log(
                                     f"[PRICE] 잔고TR 현재가 반영 {code6}: {old_px}->{current_from_holdings}"
                                 )
-                self.last_holdings_tr_rows = len(normalized)
-                # TR이 0건 반환인데 기존 포지션이 존재하면 포지션을 덮어쓰지 않음
-                # (비밀번호 오류/TR 일시 실패로 보유 종목이 사라지는 버그 방지)
                 existing_positions = sum(
                     1 for p in (self.positions or {}).values()
                     if int((p or {}).get("qty", 0) or 0) > 0
                 )
-                if normalized or existing_positions == 0:
-                    self.positions = normalized
-                else:
-                    now = datetime.datetime.now()
-                    should_warn = (
-                        self._last_positions_sync_warn_at is None
-                        or (now - self._last_positions_sync_warn_at).total_seconds() >= 300
-                    )
-                    if should_warn:
-                        self._emit_log(
-                            f"[HOLDINGS] TR 0건이나 기존 보유 {existing_positions}종목 유지 "
-                            "(계좌비번 확인 또는 TR 일시 실패)"
-                        )
-                        self._last_positions_sync_warn_at = now
-                    return
-                hold_items = sorted(
-                    (
-                        (c, int((p or {}).get("qty", 0) or 0))
-                        for c, p in normalized.items()
-                        if int((p or {}).get("qty", 0) or 0) > 0
-                    ),
-                    key=lambda x: x[0],
-                )
-                brief = ", ".join(f"{c}:{q}" for c, q in hold_items)
-                if brief != self._last_holdings_brief:
-                    msg = brief if brief else "-"
-                    self._emit_log(f"[HOLDINGS] 보유수량 요약 {msg} (TR행 {self.last_holdings_tr_rows})")
-                    self._last_holdings_brief = brief
-                # 보유 종목은 스캔 대상 여부와 무관하게 항상 중앙 리스트에 포함
+                has_password = bool(str(password).strip())
+                ledger_pos = self._positions_from_ledger()
+
                 if normalized:
-                    merged_codes = list(dict.fromkeys(list(self.stock_codes or []) + list(normalized.keys())))
-                    self.stock_codes = merged_codes
-                    for c in merged_codes:
-                        self.pending_buy.setdefault(c, False)
-                        self.pending_sell.setdefault(c, False)
-                        self.tp_reached.setdefault(c, False)
-                self._reconcile_holdings_with_trade_log()
+                    self._commit_positions_snapshot(normalized, f"TR(opw00018 {len(normalized)}행)")
+                elif existing_positions == 0:
+                    self._commit_positions_snapshot({}, "TR(opw00018 0행)")
+                else:
+                    # TR 0건인데 앱에는 보유가 남아 있음 — 키움·CSV 교차 확인
+                    trust_broker_empty = has_password
+                    if not trust_broker_empty and ledger_pos is not None and len(ledger_pos) == 0:
+                        trust_broker_empty = True
+                    if trust_broker_empty:
+                        self._emit_log(
+                            f"[HOLDINGS] TR 0건 — 키움 보유 0주로 동기화 "
+                            f"(기존 {existing_positions}종목 제거)"
+                        )
+                        self._commit_positions_snapshot({}, "TR 0건→0주")
+                    elif ledger_pos is not None:
+                        self._commit_positions_snapshot(ledger_pos, "CSV원장(TR 0건)")
+                    else:
+                        now = datetime.datetime.now()
+                        should_warn = (
+                            self._last_positions_sync_warn_at is None
+                            or (now - self._last_positions_sync_warn_at).total_seconds() >= 300
+                        )
+                        if should_warn:
+                            self._emit_log(
+                                f"[HOLDINGS] TR 0건이나 기존 보유 {existing_positions}종목 유지 "
+                                "(계좌비번 확인 또는 TR 일시 실패)"
+                            )
+                            self._last_positions_sync_warn_at = now
+                        return
             else:
                 data = {}
             # 비밀번호 미설정/조회 실패로 빈 응답이 오는 경우를 진단 로그로 남김(과다 방지: 5분 1회)
@@ -4685,6 +4760,7 @@ class TradingEngine:
             meta["fills_notified_qty"] = already + use_qty
             if int(meta["fills_notified_qty"]) >= ord_qty:
                 self.pending_orders.pop(code, None)
+            self._adjust_position_on_chejan_fill(code, "BUY", int(use_qty), int(round(px)))
             self._emit_log(
                 f"[CHEJAN-FILL] BUY {code} qty={use_qty} px={avg_price_int} cum={meta['fills_notified_qty']}/{ord_qty}"
             )
@@ -4737,6 +4813,7 @@ class TradingEngine:
             meta["fills_notified_qty"] = already + use_qty
             if int(meta["fills_notified_qty"]) >= ord_qty:
                 self.pending_orders.pop(code, None)
+            self._adjust_position_on_chejan_fill(code, "SELL", int(use_qty), int(round(px)))
             self._emit_log(
                 f"[CHEJAN-FILL] SELL {code} qty={use_qty} px={int(round(px))} "
                 f"cum={meta['fills_notified_qty']}/{ord_qty}"

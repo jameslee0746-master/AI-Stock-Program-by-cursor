@@ -1,19 +1,26 @@
 {
   "_comment": "하루 1개 전략 패키지 스케줄 추적. 자동 생성/관리됩니다.",
   "current": {
-    "strategy_id": "steady_state",
-    "strategy_name": "안정 기조 유지",
-    "applied_date": "2026-06-17",
+    "strategy_id": "giveup_guard",
+    "strategy_name": "GIVE-UP 방어 강화",
+    "applied_date": "2026-06-22",
     "revert_on_loss": false,
-    "prev_values": {},
-    "changes": {},
+    "prev_values": {
+      "REENTRY_STOP_LOSS_PCT": -0.02
+    },
+    "changes": {
+      "REENTRY_STOP_LOSS_PCT": {
+        "from": -0.02,
+        "to": -0.025
+      }
+    },
     "context": {
       "win_rate_block": 0,
-      "strategy_block": 0,
-      "no_price_block": 1106,
+      "strategy_block": 26081,
+      "no_price_block": 1481,
       "daily_loss_block": 0,
-      "giveup_count": 0,
-      "timeout_count": 1,
+      "giveup_count": 1,
+      "timeout_count": 31,
       "n_buy": 1
     }
   },
@@ -191,6 +198,97 @@
         "giveup_count": 0,
         "timeout_count": 1,
         "n_buy": 2
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-06-17",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1106,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 1,
+        "n_buy": 1
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-06-18",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1328,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 2,
+        "n_buy": 4
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "loss_control_tighten",
+      "strategy_name": "손실 제어 강화",
+      "applied_date": "2026-06-19",
+      "revert_on_loss": false,
+      "prev_values": {
+        "REENTRY_POSITION_SIZE_FACTOR": 0.4
+      },
+      "changes": {
+        "REENTRY_POSITION_SIZE_FACTOR": {
+          "from": 0.4,
+          "to": 0.3
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 6740,
+        "no_price_block": 1018,
+        "daily_loss_block": 13502,
+        "giveup_count": 0,
+        "timeout_count": 19,
+        "n_buy": 3
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "giveup_guard",
+      "strategy_name": "GIVE-UP 방어 강화",
+      "applied_date": "2026-06-22",
+      "revert_on_loss": false,
+      "prev_values": {
+        "MARKET_OPEN_BUY_GUARD_MINUTES": 25.0,
+        "REENTRY_STOP_LOSS_PCT": -0.015
+      },
+      "changes": {
+        "MARKET_OPEN_BUY_GUARD_MINUTES": {
+          "from": 25.0,
+          "to": 30
+        },
+        "REENTRY_STOP_LOSS_PCT": {
+          "from": -0.015,
+          "to": -0.02
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 26081,
+        "no_price_block": 1481,
+        "daily_loss_block": 0,
+        "giveup_count": 1,
+        "timeout_count": 31,
+        "n_buy": 1
       },
       "result": "kept"
     }
