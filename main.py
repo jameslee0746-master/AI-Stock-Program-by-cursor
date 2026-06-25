@@ -219,6 +219,16 @@ SCALE_IN_MAX_POSITION_BUDGET_FACTOR = 0.75
 MARKET_WEAK_EXIT_LOSS_PCT = -0.005
 # 장 시작 직후(갭·급변동) 신규 매수 금지 분 — 018880 갭 손절 사례 대응
 MARKET_OPEN_BUY_GUARD_MINUTES = int(os.environ.get("MARKET_OPEN_BUY_GUARD_MINUTES", "15"))
+# bull(상승장) 전용 진입 소폭 완화 — bear/range·손절/포지션 한도는 그대로
+BULL_ENTRY_RELAX_ENABLED = os.environ.get("BULL_ENTRY_RELAX_ENABLED", "1").strip().lower() in (
+    "1", "true", "yes", "y",
+)
+BULL_AI_ENTRY_DELTA = float(os.environ.get("BULL_AI_ENTRY_DELTA", "-0.04"))
+BULL_VOL_RATIO_MULT = float(os.environ.get("BULL_VOL_RATIO_MULT", "0.90"))
+BULL_VOL_GROWTH_MULT = float(os.environ.get("BULL_VOL_GROWTH_MULT", "0.92"))
+BULL_GUARD_MINUTES_DELTA = int(os.environ.get("BULL_GUARD_MINUTES_DELTA", "-5"))
+BULL_SCORE_DELTA = float(os.environ.get("BULL_SCORE_DELTA", "-0.03"))
+BULL_TREND_VOL_MULT = float(os.environ.get("BULL_TREND_VOL_MULT", "0.85"))
 # 매수 차단 사유 요약 로그 주기(초)
 BUY_DIAG_INTERVAL_SEC = float(os.environ.get("BUY_DIAG_INTERVAL_SEC", "300"))
 # 당일 매수 0건 + 하락/횡보 국면 + 장중 2시간 경과 시 진입 문턱 소폭 완화
@@ -2844,9 +2854,33 @@ class TradingEngine:
     def _is_market_weak(self) -> bool:
         return self._market_regime_label() == "bear"
 
+    def _is_bull_regime(self) -> bool:
+        return self._market_regime_label() == "bull"
+
+    def _bull_entry_relax_active(self) -> bool:
+        return bool(BULL_ENTRY_RELAX_ENABLED) and self._is_bull_regime()
+
+    def _effective_market_open_guard_minutes(self) -> int:
+        base = max(0, int(MARKET_OPEN_BUY_GUARD_MINUTES))
+        if self._bull_entry_relax_active():
+            return max(10, base + int(BULL_GUARD_MINUTES_DELTA))
+        return base
+
+    def _effective_vol_entry_ratio_min(self) -> float:
+        base = float(VOL_ENTRY_RATIO_MIN)
+        if self._bull_entry_relax_active():
+            return max(0.55, base * float(BULL_VOL_RATIO_MULT))
+        return base
+
+    def _effective_vol_entry_growth_min(self) -> float:
+        base = float(VOL_ENTRY_GROWTH_MIN)
+        if self._bull_entry_relax_active():
+            return max(0.55, base * float(BULL_VOL_GROWTH_MULT))
+        return base
+
     def _in_market_open_buy_guard(self) -> bool:
         """09:00~09:XX 신규 매수 금지(갭·시초 변동성). guard_min=15 → 9:15부터 허용."""
-        guard_min = max(0, int(MARKET_OPEN_BUY_GUARD_MINUTES))
+        guard_min = self._effective_market_open_guard_minutes()
         if guard_min <= 0 or self.market_session_name() != "정규장":
             return False
         now = QTime.currentTime()
@@ -2892,6 +2926,8 @@ class TradingEngine:
         base = float(BUY_SCORE_MIN)
         if self._no_trade_relax_active():
             return max(0.10, base + float(NO_TRADE_RELAX_SCORE_DELTA))
+        if self._bull_entry_relax_active():
+            return max(0.10, base + float(BULL_SCORE_DELTA))
         return base
 
     def _today_realized_pnl_pct(self) -> float:
@@ -2979,6 +3015,8 @@ class TradingEngine:
             threshold += float(AUTO_BT_CAUTION_AI_ENTRY_ADD)
         if self._no_trade_relax_active():
             threshold += float(NO_TRADE_RELAX_AI_DELTA)
+        if self._bull_entry_relax_active():
+            threshold += float(BULL_AI_ENTRY_DELTA)
         return min(0.80, max(0.0, threshold))
 
     def _auto_bt_mode(self) -> str:
@@ -4048,6 +4086,7 @@ class TradingEngine:
         sample = (self.stock_codes[0] if self.stock_codes else "")
         entry_rule = self._effective_buy_strategy_id(sample) if sample else active
         relax = "ON" if self._no_trade_relax_active() else "off"
+        bull_relax = "ON" if self._bull_entry_relax_active() else "off"
         guard = "ON" if self._in_market_open_buy_guard() else "off"
         ai_tag = "학습됨" if self.ai_model is not None else "미학습(기술만)"
         top_blocks = sorted(
@@ -4058,7 +4097,7 @@ class TradingEngine:
             f"[BUY-DIAG] 대상 {n_targets}종 MA준비 {n_ma} | 후보 {len(candidates)} | "
             f"시장={regime} 활성전략={active} 진입규칙={entry_rule} AI={ai_tag} | "
             f"AI문턱={self._dynamic_ai_entry_min():.2f} score≥{self._effective_buy_score_min():.2f} | "
-            f"완화={relax} 장초금지={guard} | 차단상위: {block_txt}"
+            f"완화={relax} bull완화={bull_relax} 장초금지={guard} | 차단상위: {block_txt}"
         )
         if candidates:
             preview = ", ".join(f"{c}({s:.2f})" for s, c in candidates[:3])
@@ -4068,7 +4107,7 @@ class TradingEngine:
         if self._in_market_open_buy_guard():
             self._log_buy_block(
                 code,
-                f"장초 변동성 구간 매수금지(09:00~09:{int(MARKET_OPEN_BUY_GUARD_MINUTES):02d})",
+                f"장초 변동성 구간 매수금지(09:00~09:{self._effective_market_open_guard_minutes():02d})",
                 interval_sec=300.0,
             )
             return False
@@ -4299,10 +4338,10 @@ class TradingEngine:
                 return fail("RSI 상승 아님")
             if (rsi14 - rsi14_prev) < (RSI_MIN_DELTA * 0.5):
                 return fail("RSI 상승폭 부족")
-            if vol_ratio < (VOL_ENTRY_RATIO_MIN * 1.08):
+            if vol_ratio < (self._effective_vol_entry_ratio_min() * 1.08):
                 return fail("거래량 평균비 부족")
             # 공격형: volume 전략도 전일 대비 거래량 감소 일부를 허용
-            g_min = max(VOL_ENTRY_GROWTH_MIN, 0.96)
+            g_min = max(self._effective_vol_entry_growth_min(), 0.96)
             if vol_prev > 0 and vol_today < int(vol_prev * g_min):
                 return fail("전일대비 거래량 부족")
             if not self._ai_buy_filter_soft(code, cur):
@@ -4319,7 +4358,10 @@ class TradingEngine:
             # RSI 40 이상이면 하락 중이어도 허용 (조정 후 반등 포착)
             if rsi14 < rsi14_prev and rsi14 < 40.0:
                 return fail("RSI 하락·약세(40 미만)")
-            if vol_ratio < (VOL_ENTRY_RATIO_MIN * 0.65):
+            trend_vol_min = self._effective_vol_entry_ratio_min() * (
+                float(BULL_TREND_VOL_MULT) if self._bull_entry_relax_active() else 0.65
+            )
+            if vol_ratio < trend_vol_min:
                 return fail("거래량 평균비 부족")
             if not self._ai_buy_filter_soft(code, cur):
                 return fail(f"AI 상승확률 부족(트렌드·완화 thr={self._dynamic_ai_entry_min_soft():.2f})")
@@ -4334,9 +4376,9 @@ class TradingEngine:
             return fail("RSI 상승 아님")
         if (rsi14 - rsi14_prev) < RSI_MIN_DELTA:
             return fail("RSI 상승폭 부족")
-        if vol_ratio < VOL_ENTRY_RATIO_MIN:
+        if vol_ratio < self._effective_vol_entry_ratio_min():
             return fail("거래량 평균비 부족")
-        if vol_prev > 0 and vol_today < int(vol_prev * VOL_ENTRY_GROWTH_MIN):
+        if vol_prev > 0 and vol_today < int(vol_prev * self._effective_vol_entry_growth_min()):
             return fail("전일대비 거래량 부족")
         if not self._ai_buy_filter_soft(code, cur):
             return fail(f"AI 상승확률 부족(thr={self._dynamic_ai_entry_min_soft():.2f})")
