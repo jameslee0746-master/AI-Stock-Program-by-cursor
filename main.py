@@ -157,10 +157,13 @@ VOL_ENTRY_RATIO_MIN = 0.88  # was 0.95
 VOL_ENTRY_GROWTH_MIN = 0.88  # was 0.94
 
 # AI 모델(추가 필터): LightGBM/XGBoost가 있으면 우선 사용하고, 없으면 RandomForest로 fallback
-AI_TRAIN_COUNT = 120  # 학습용 최근 일봉 개수
+AI_TRAIN_COUNT = int(os.environ.get("AI_TRAIN_COUNT", "200"))  # 학습용 최근 일봉 개수(was 120 -> 종목당 샘플 확대)
 AI_PROBA_ENTRY_MIN = 0.42  # was 0.45; "AI 상승확률 부족" 소폭 완화(동적 가산은 유지)
 AI_RET_LABEL_THRESHOLD = 0.002  # 비용 차감 후 기대수익률이 이 값보다 크면 상승 라벨
 AI_MIN_TOTAL_SAMPLES = 200
+# 당일 스캔·보유 종목만으로는 학습 샘플이 부족할 때, 시총 상위 유동성 종목을 학습 전용으로 보강
+AI_TRAIN_MIN_CODES = int(os.environ.get("AI_TRAIN_MIN_CODES", "15"))
+AI_TRAIN_SUPPLEMENT_MC_TOP_N = int(os.environ.get("AI_TRAIN_SUPPLEMENT_MC_TOP_N", "60"))
 AI_N_ESTIMATORS = 200
 AI_RANDOM_STATE = 42
 AI_LABEL_HORIZON_DAYS = 3  # 매수 후 N거래일 안의 손절/익절 도달 순서로 라벨 생성
@@ -3400,7 +3403,26 @@ class TradingEngine:
             # 각 종목별로 학습 데이터를 만들고 합칩니다.
             # (학습 시 TR을 여러 번 호출하므로, 가능한 한 종목/샘플 수를 제한)
             train_count = AI_TRAIN_COUNT
-            for code in self.stock_codes:
+            training_codes = list(dict.fromkeys(self.stock_codes or []))
+            if len(training_codes) < int(AI_TRAIN_MIN_CODES):
+                try:
+                    supplement = _mc_top_allowlist_for_scan(int(AI_TRAIN_SUPPLEMENT_MC_TOP_N))
+                except Exception:
+                    supplement = None
+                if supplement:
+                    before_ct = len(training_codes)
+                    for c in supplement:
+                        c6 = str(c).strip()
+                        if c6 and c6 not in training_codes:
+                            training_codes.append(c6)
+                        if len(training_codes) >= int(AI_TRAIN_MIN_CODES):
+                            break
+                    if len(training_codes) > before_ct:
+                        self._emit_log(
+                            f"[AI] 학습 종목 보강: {before_ct} -> {len(training_codes)} "
+                            f"(시총상위 학습전용 추가, 실매매 대상엔 미포함)"
+                        )
+            for code in training_codes:
                 ohlcv = self.kiwoom.request_daily_ohlcv(
                     code, end_date_yyyymmdd=end_date, count=train_count
                 )
