@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_tuned_date": "2026-06-18",
+  "last_tuned_date": "2026-06-24",
   "_mode": "conservative",
   "params": {
     "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
@@ -30,7 +30,7 @@
       "note": "최근 N일 손절 횟수 차단 임계값 — 3회 손절 시 차단 (보수 강화)"
     },
     "VOL_ENTRY_RATIO_MIN": {
-      "value": 0.85,
+      "value": 0.76,
       "default": 0.88,
       "min": 0.6,
       "max": 1.2,
@@ -38,7 +38,7 @@
       "note": "거래량 평균비 최소 기준 — 거래량 필터 복원"
     },
     "VOL_ENTRY_GROWTH_MIN": {
-      "value": 0.85,
+      "value": 0.76,
       "default": 0.88,
       "min": 0.6,
       "max": 1.2,
@@ -54,7 +54,7 @@
       "note": "MA20 이격 허용 상단 축소 — MA20 근처 종목만 진입"
     },
     "AI_PROBA_ENTRY_MIN": {
-      "value": 0.38,
+      "value": 0.3,
       "default": 0.42,
       "min": 0.3,
       "max": 0.6,
@@ -97,7 +97,7 @@
       "note": "동시 보유 최대 종목 수 축소 — 2종목으로 분산 최소화"
     },
     "REENTRY_STOP_LOSS_PCT": {
-      "value": -0.025,
+      "value": -0.02,
       "default": -0.015,
       "min": -0.03,
       "max": -0.005,
@@ -226,6 +226,23 @@
           "from": 7.0,
           "to": 5,
           "reason": "승률 차단 없음 + 매수 4건 → MIN_SELLS 소폭 강화"
+        }
+      ]
+    },
+    {
+      "date": "2026-06-24",
+      "changes": [
+        {
+          "param": "VOL_ENTRY_RATIO_MIN",
+          "from": 0.85,
+          "to": 0.82,
+          "reason": "전략조건 미충족 25331회+매수0건 → 거래량비율 완화"
+        },
+        {
+          "param": "VOL_ENTRY_GROWTH_MIN",
+          "from": 0.85,
+          "to": 0.82,
+          "reason": "전략조건 미충족 25331회+매수0건 → 거래량증가 완화"
         }
       ]
     }
