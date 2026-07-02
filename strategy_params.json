@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_tuned_date": "2026-06-24",
+  "last_tuned_date": "2026-07-02",
   "_mode": "conservative",
   "params": {
     "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
@@ -73,47 +73,96 @@
       "note": "장 시작 후 신규 매수 금지 분"
     },
     "STOP_LOSS_PCT": {
-      "value": -0.02,
+      "value": -0.015,
       "default": -0.03,
       "min": -0.05,
       "max": -0.01,
       "step": 0.005,
-      "note": "손절 기준 강화 — -2.0% 도달 시 즉시 손절 (기존 -3.0%)"
+      "note": "손절 기준 재강화 — -1.5% 도달 시 즉시 손절 (누적손실 -20.23% → 사용자 요청 보수 강화)"
     },
     "DAILY_LOSS_HARD_LIMIT_PCT": {
-      "value": -0.015,
+      "value": -0.01,
       "default": -0.03,
       "min": -0.05,
       "max": -0.005,
       "step": 0.005,
-      "note": "일일 손실 한도 강화 — -1.5% 초과 시 당일 매수 전면 중단 (기존 -3.0%)"
+      "note": "일일 손실 한도 재강화 — -1.0% 초과 시 당일 매수 전면 중단 (누적손실 -20.23% → 사용자 요청 보수 강화)"
     },
     "MAX_CONCURRENT_POSITIONS": {
-      "value": 2,
+      "value": 1,
       "default": 5,
       "min": 1,
       "max": 5,
       "step": 1,
-      "note": "동시 보유 최대 종목 수 축소 — 2종목으로 분산 최소화"
+      "note": "동시 보유 최대 종목 수 축소 — 1종목만 보유 (누적손실 -20.23% → 사용자 요청 보수 강화)"
     },
     "REENTRY_STOP_LOSS_PCT": {
-      "value": -0.02,
+      "value": -0.015,
       "default": -0.015,
       "min": -0.03,
       "max": -0.005,
       "step": 0.005,
-      "note": "손절 후 재진입 시 손절 기준 (-1.5%)"
+      "note": "손절 후 재진입 시 손절 기준 재강화 (-1.5%, 누적손실 -20.23% → 사용자 요청 보수 강화)"
     },
     "REENTRY_POSITION_SIZE_FACTOR": {
-      "value": 0.3,
+      "value": 0.15,
       "default": 0.5,
-      "min": 0.25,
+      "min": 0.15,
       "max": 1.0,
       "step": 0.1,
-      "note": "재진입 포지션 크기 40%로 축소 (기존 50%)"
+      "note": "재진입 포지션 크기 30%로 축소 (기존 25%, 누적손실 -20.23% → 사용자 요청 보수 강화)"
+    },
+    "MAX_POSITION_BUDGET_PCT": {
+      "value": 0.15,
+      "default": 0.2,
+      "min": 0.05,
+      "max": 0.2,
+      "step": 0.02,
+      "note": "종목당 최대 투자비중 축소 — 추정예탁자산의 15%로 제한 (기존 20%, 누적손실 -20.23% → 사용자 요청 보수 강화)"
     }
   },
   "history": [
+    {
+      "date": "2026-07-02",
+      "changes": [
+        {
+          "param": "STOP_LOSS_PCT",
+          "from": -0.02,
+          "to": -0.015,
+          "reason": "누적손익 -2,023,008원(-20.23%) → 사용자 요청으로 손절 재강화 (수동)"
+        },
+        {
+          "param": "DAILY_LOSS_HARD_LIMIT_PCT",
+          "from": -0.015,
+          "to": -0.01,
+          "reason": "누적손실 확대 → 일일 손실한도 재강화 (수동)"
+        },
+        {
+          "param": "MAX_CONCURRENT_POSITIONS",
+          "from": 2,
+          "to": 1,
+          "reason": "누적손실 확대 → 동시보유 1종목으로 축소 (수동)"
+        },
+        {
+          "param": "REENTRY_STOP_LOSS_PCT",
+          "from": -0.02,
+          "to": -0.015,
+          "reason": "누적손실 확대 → 재진입 손절 재강화 (수동)"
+        },
+        {
+          "param": "REENTRY_POSITION_SIZE_FACTOR",
+          "from": 0.25,
+          "to": 0.15,
+          "reason": "누적손실 확대 → 재진입 포지션 크기 추가 축소 (수동)"
+        },
+        {
+          "param": "MAX_POSITION_BUDGET_PCT",
+          "from": 0.2,
+          "to": 0.15,
+          "reason": "누적손실 확대 → 종목당 최대 투자비중 20%→15% 축소 (수동)"
+        }
+      ]
+    },
     {
       "date": "2026-06-11",
       "changes": [
