@@ -1,27 +1,20 @@
 {
   "_comment": "하루 1개 전략 패키지 스케줄 추적. 자동 생성/관리됩니다.",
   "current": {
-    "strategy_id": "loss_control_tighten",
-    "strategy_name": "손실 제어 강화",
-    "applied_date": "2026-07-02",
+    "strategy_id": "steady_state",
+    "strategy_name": "안정 기조 유지",
+    "applied_date": "2026-07-03",
     "revert_on_loss": false,
-    "prev_values": {
-      "REENTRY_POSITION_SIZE_FACTOR": 0.3
-    },
-    "changes": {
-      "REENTRY_POSITION_SIZE_FACTOR": {
-        "from": 0.3,
-        "to": 0.25
-      }
-    },
+    "prev_values": {},
+    "changes": {},
     "context": {
       "win_rate_block": 0,
-      "strategy_block": 1029,
-      "no_price_block": 1324,
-      "daily_loss_block": 20374,
+      "strategy_block": 0,
+      "no_price_block": 1235,
+      "daily_loss_block": 0,
       "giveup_count": 0,
       "timeout_count": 0,
-      "n_buy": 1
+      "n_buy": 0
     }
   },
   "history": [
@@ -471,6 +464,31 @@
         "giveup_count": 0,
         "timeout_count": 0,
         "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "loss_control_tighten",
+      "strategy_name": "손실 제어 강화",
+      "applied_date": "2026-07-02",
+      "revert_on_loss": false,
+      "prev_values": {
+        "REENTRY_POSITION_SIZE_FACTOR": 0.3
+      },
+      "changes": {
+        "REENTRY_POSITION_SIZE_FACTOR": {
+          "from": 0.3,
+          "to": 0.25
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 1029,
+        "no_price_block": 1324,
+        "daily_loss_block": 20374,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 1
       },
       "result": "kept"
     }
