@@ -222,7 +222,9 @@ SCALE_IN_MAX_POSITION_BUDGET_FACTOR = 0.75
 MARKET_WEAK_EXIT_LOSS_PCT = -0.005
 # 장 시작 직후(갭·급변동) 신규 매수 금지 분 — 018880 갭 손절 사례 대응
 MARKET_OPEN_BUY_GUARD_MINUTES = int(os.environ.get("MARKET_OPEN_BUY_GUARD_MINUTES", "15"))
-# bull(상승장) 전용 진입 소폭 완화 — bear/range·손절/포지션 한도는 그대로
+# bull(상승장) 전용 진입 소폭 완화. 보수 모드로 포지션/손절 한도를 극단적으로 좁혀둔 상태에서
+# 확인된 상승장에서도 거래가 완전히 막히는 것을 막기 위해, 동시보유 한도·최근손절 차단 횟수도
+# bull 국면에서 소폭(안전 상한 내) 완화한다. bear/range 국면에서는 손대지 않고 보수 기준 그대로 유지.
 BULL_ENTRY_RELAX_ENABLED = os.environ.get("BULL_ENTRY_RELAX_ENABLED", "1").strip().lower() in (
     "1", "true", "yes", "y",
 )
@@ -232,6 +234,12 @@ BULL_VOL_GROWTH_MULT = float(os.environ.get("BULL_VOL_GROWTH_MULT", "0.92"))
 BULL_GUARD_MINUTES_DELTA = int(os.environ.get("BULL_GUARD_MINUTES_DELTA", "-5"))
 BULL_SCORE_DELTA = float(os.environ.get("BULL_SCORE_DELTA", "-0.03"))
 BULL_TREND_VOL_MULT = float(os.environ.get("BULL_TREND_VOL_MULT", "0.85"))
+# bull 국면 한정 동시보유 한도 완화: +bonus, 단 (현재 한도, hard_cap) 중 큰 값을 넘지 않음
+# → 보수 모드(한도=1)일 때만 사실상 늘어나고, 원래 기본값(5)보다 더 커지지는 않음(안전장치)
+BULL_MAX_POSITIONS_BONUS = int(os.environ.get("BULL_MAX_POSITIONS_BONUS", "1"))
+BULL_MAX_POSITIONS_HARD_CAP = int(os.environ.get("BULL_MAX_POSITIONS_HARD_CAP", "3"))
+# bull 국면 한정 "최근 손절 반복" 차단 임계값 완화(+bonus)
+BULL_RECENT_LOSS_BONUS = int(os.environ.get("BULL_RECENT_LOSS_BONUS", "1"))
 # 매수 차단 사유 요약 로그 주기(초)
 BUY_DIAG_INTERVAL_SEC = float(os.environ.get("BUY_DIAG_INTERVAL_SEC", "300"))
 # 당일 매수 0건 + 하락/횡보 국면 + 장중 2시간 경과 시 진입 문턱 소폭 완화
@@ -2641,7 +2649,7 @@ class TradingEngine:
             for _c, m in (self.pending_orders or {}).items()
             if str((m or {}).get("side", "")).lower() == "buy"
         )
-        remaining_slots = max(1, int(MAX_CONCURRENT_POSITIONS) - active_positions - pending_buys)
+        remaining_slots = max(1, self._effective_max_positions() - active_positions - pending_buys)
         per_slot_budget = remaining_budget / float(remaining_slots)
         max_position_budget = total_limit * max(0.01, float(MAX_POSITION_BUDGET_PCT))
         target_budget = max(price, min(per_slot_budget, max_position_budget))
@@ -3000,10 +3008,21 @@ class TradingEngine:
 
     def _effective_max_positions(self) -> int:
         limit = int(MAX_CONCURRENT_POSITIONS)
+        if self._bull_entry_relax_active():
+            # 보수 한도(예: 1)에서만 실질적으로 늘어나고, hard_cap이 현재 한도보다 작으면
+            # 현재 한도를 그대로 사용해 원래 설정보다 더 느슨해지지 않도록 한다.
+            limit = min(limit + int(BULL_MAX_POSITIONS_BONUS), max(limit, int(BULL_MAX_POSITIONS_HARD_CAP)))
         if self._is_market_weak():
             limit = min(limit, int(MARKET_WEAK_MAX_CONCURRENT_POSITIONS))
         if self._today_realized_pnl_pct() <= float(DAILY_LOSS_SOFT_LIMIT_PCT):
             limit = min(limit, int(DAILY_LOSS_MAX_CONCURRENT_POSITIONS))
+        return max(1, limit)
+
+    def _effective_recent_loss_block_count(self) -> int:
+        """RECENT_LOSS_BLOCK_COUNT의 실효값. bull 국면에서는 소폭 완화, 그 외는 보수 기준 그대로."""
+        limit = int(RECENT_LOSS_BLOCK_COUNT)
+        if self._bull_entry_relax_active():
+            limit += int(BULL_RECENT_LOSS_BONUS)
         return max(1, limit)
 
     def _dynamic_ai_entry_min(self) -> float:
@@ -4118,7 +4137,8 @@ class TradingEngine:
         self._emit_log(
             f"[BUY-DIAG] 대상 {n_targets}종 MA준비 {n_ma} | 후보 {len(candidates)} | "
             f"시장={regime} 활성전략={active} 진입규칙={entry_rule} AI={ai_tag} | "
-            f"AI문턱={self._dynamic_ai_entry_min():.2f} score≥{self._effective_buy_score_min():.2f} | "
+            f"AI문턱={self._dynamic_ai_entry_min():.2f} score≥{self._effective_buy_score_min():.2f} "
+            f"동시보유한도={self._effective_max_positions()} 최근손절한도={self._effective_recent_loss_block_count()} | "
             f"완화={relax} bull완화={bull_relax} 장초금지={guard} | 차단상위: {block_txt}"
         )
         if candidates:
@@ -4180,10 +4200,11 @@ class TradingEngine:
             self._log_buy_block(code, "자동백테스트 게이트 차단")
             return False
         recent_losses = self._recent_loss_count_for_code(code)
-        if recent_losses >= int(RECENT_LOSS_BLOCK_COUNT):
+        effective_recent_loss_limit = self._effective_recent_loss_block_count()
+        if recent_losses >= effective_recent_loss_limit:
             self._log_buy_block(
                 code,
-                f"최근 손절 반복({recent_losses}회/{int(RECENT_LOSS_LOOKBACK_DAYS)}일)",
+                f"최근 손절 반복({recent_losses}/{effective_recent_loss_limit}회, {int(RECENT_LOSS_LOOKBACK_DAYS)}일)",
             )
             return False
         cur = self.current_price.get(code)
