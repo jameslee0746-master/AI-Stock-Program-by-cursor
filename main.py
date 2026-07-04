@@ -160,7 +160,10 @@ VOL_ENTRY_GROWTH_MIN = 0.88  # was 0.94
 AI_TRAIN_COUNT = int(os.environ.get("AI_TRAIN_COUNT", "200"))  # 학습용 최근 일봉 개수(was 120 -> 종목당 샘플 확대)
 AI_PROBA_ENTRY_MIN = 0.42  # was 0.45; "AI 상승확률 부족" 소폭 완화(동적 가산은 유지)
 AI_RET_LABEL_THRESHOLD = 0.002  # 비용 차감 후 기대수익률이 이 값보다 크면 상승 라벨
-AI_MIN_TOTAL_SAMPLES = 200
+# 실측 결과 학습 유니버스 기준 총 샘플이 보통 97~194개 사이에서 형성되어 200 문턱을
+# 거의 매일 못 넘고 "학습 스킵"으로 빠졌다(2026-06~07 로그에서 194/200이 반복 확인됨).
+# 150으로 낮춰 194·177 등 흔한 샘플 수에서는 실제로 학습이 진행되도록 한다.
+AI_MIN_TOTAL_SAMPLES = 150
 # 당일 스캔·보유 종목만으로는 학습 샘플이 부족할 때, 시총 상위 유동성 종목을 학습 전용으로 보강
 AI_TRAIN_MIN_CODES = int(os.environ.get("AI_TRAIN_MIN_CODES", "15"))
 AI_TRAIN_SUPPLEMENT_MC_TOP_N = int(os.environ.get("AI_TRAIN_SUPPLEMENT_MC_TOP_N", "60"))
@@ -3619,7 +3622,14 @@ class TradingEngine:
                     if str(AI_CALIBRATION_METHOD).lower() in ("sigmoid", "isotonic")
                     else "sigmoid"
                 )
-                calibrator = CalibratedClassifierCV(estimator=base_m, method=cal_method, cv="prefit")
+                # sklearn>=1.2는 estimator=, <1.2는 base_estimator= 파라미터명을 사용한다.
+                # 설치된 버전(1.1.2)에서 estimator=만 쓰면 매번
+                # "__init__() got an unexpected keyword argument 'estimator'"로 학습이 중단되어
+                # AI 모델이 몇 주간 전혀 갱신되지 못했던 원인이었다 — 두 버전 모두 지원하도록 방어.
+                try:
+                    calibrator = CalibratedClassifierCV(estimator=base_m, method=cal_method, cv="prefit")
+                except TypeError:
+                    calibrator = CalibratedClassifierCV(base_estimator=base_m, method=cal_method, cv="prefit")
                 calibrator.fit(X_val, y_val)
                 p_cal_v: List[float] = []
                 try:
