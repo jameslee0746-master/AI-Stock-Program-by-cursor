@@ -73,6 +73,40 @@ STRATEGY_MARKET_INDEX_CANDIDATES: Tuple[str, ...] = tuple(
 # 국면 분류: 모멘텀 = 0.45*ret20 + 0.35*dist_ma20 + 0.20*ma20_slope(%p)
 MARKET_REGIME_MOMENTUM_BULL = float(os.environ.get("MARKET_REGIME_MOMENTUM_BULL", "1.2"))
 MARKET_REGIME_MOMENTUM_BEAR = float(os.environ.get("MARKET_REGIME_MOMENTUM_BEAR", "-1.2"))
+# 히스테리시스: 진입은 더 엄격, 이탈은 더 느슨 + 최소 유지시간 (임계 근처 30분 단위 flip 방지)
+MARKET_REGIME_BULL_ENTER = float(os.environ.get("MARKET_REGIME_BULL_ENTER", "1.4"))
+MARKET_REGIME_BULL_EXIT = float(os.environ.get("MARKET_REGIME_BULL_EXIT", "1.0"))
+MARKET_REGIME_BEAR_ENTER = float(os.environ.get("MARKET_REGIME_BEAR_ENTER", "-1.4"))
+MARKET_REGIME_BEAR_EXIT = float(os.environ.get("MARKET_REGIME_BEAR_EXIT", "-1.0"))
+MARKET_REGIME_MIN_HOLD_SEC = float(os.environ.get("MARKET_REGIME_MIN_HOLD_SEC", "3600"))
+# 키움 지수 국면이 이 시간 내 갱신됐으면 yfinance/합성 소스로 덮어쓰지 않음
+MARKET_REGIME_PRIMARY_TTL_SEC = float(os.environ.get("MARKET_REGIME_PRIMARY_TTL_SEC", "7200"))
+_REGIME_KO = {"bull": "상승", "bear": "하락", "range": "횡보"}
+
+
+def regime_momentum(r: "MarketRegimeSnapshot") -> float:
+    return 0.45 * float(r.ret_20d_pct) + 0.35 * float(r.dist_ma20_pct) + 0.20 * float(r.ma20_slope_pctp)
+
+
+def _hysteresis_label(prev_label: str, mom: float) -> str:
+    if prev_label == "bull":
+        if mom <= MARKET_REGIME_BEAR_ENTER:
+            return "bear"
+        return "bull" if mom >= MARKET_REGIME_BULL_EXIT else "range"
+    if prev_label == "bear":
+        if mom >= MARKET_REGIME_BULL_ENTER:
+            return "bull"
+        return "bear" if mom <= MARKET_REGIME_BEAR_EXIT else "range"
+    if mom >= MARKET_REGIME_BULL_ENTER:
+        return "bull"
+    if mom <= MARKET_REGIME_BEAR_ENTER:
+        return "bear"
+    return "range"
+
+
+def _is_primary_regime_source(source: str) -> bool:
+    s = str(source or "").lower()
+    return s.startswith("kiwoom:index") or s.startswith("index:kiwoom")
 
 
 def _safe_float(x: object, default: float = 0.0) -> float:
@@ -100,16 +134,16 @@ def _load_ohlcv(code: str) -> Optional[Tuple[List[float], List[float], List[floa
         return None
     for ticker in _to_yf_ticker(code):
         try:
-            df = yf.download(
-                ticker,
+            # yf.download는 전역 상태를 공유해 병렬 호출 시 결과가 섞이고 다단 컬럼을 반환 → Ticker.history 사용
+            df = yf.Ticker(ticker).history(
                 period="6mo",
                 interval="1d",
                 auto_adjust=False,
-                progress=False,
-                threads=False,
             )
             if df is None or getattr(df, "empty", True):
                 continue
+            if getattr(df.columns, "nlevels", 1) > 1:
+                df.columns = df.columns.get_level_values(0)
             need = ("Close", "High", "Low", "Volume")
             if not all(col in df.columns for col in need):
                 continue
@@ -451,9 +485,14 @@ class StrategyManager:
         self,
         interval_sec: int = STRATEGY_EVAL_INTERVAL_SEC,
         emit_log: Optional[Callable[[str], None]] = None,
+        ohlcv_loader: Optional[
+            Callable[[str], Optional[Tuple[List[float], List[float], List[float], List[float]]]]
+        ] = None,
     ) -> None:
         self.interval_sec = max(60, int(interval_sec))
         self._emit_log = emit_log
+        # yfinance 실패 시 키움 등 외부 로더 (메인스레드에서 채운 캐시 권장)
+        self._ohlcv_loader = ohlcv_loader
         self._lock = threading.Lock()
         self._eval_thread_running = False
         self._last_eval_ts = 0.0
@@ -464,6 +503,8 @@ class StrategyManager:
         self._selector = StrategyAISelector(STRATEGY_IDS)
         self.last_ai_reason: str = ""
         self.last_market_regime: Optional[MarketRegimeSnapshot] = None
+        self._regime_changed_at = 0.0
+        self._primary_regime_at = 0.0
         self._data_dir = STRATEGY_DATA_DIR
         self._eval_history_path = os.path.join(self._data_dir, "strategy_eval_history.jsonl")
         self._training_rows_path = os.path.join(self._data_dir, "strategy_training_rows.jsonl")
@@ -472,6 +513,63 @@ class StrategyManager:
 
     def set_emit_log(self, fn: Optional[Callable[[str], None]]) -> None:
         self._emit_log = fn
+
+    def set_market_regime(self, raw: MarketRegimeSnapshot) -> Tuple[MarketRegimeSnapshot, str, bool]:
+        """히스테리시스·최소유지·소스우선순위를 적용해 last_market_regime 을 갱신.
+
+        Returns (적용된 국면, 이전 라벨, 채택 여부). 키움 지수 국면이 신선하면
+        yfinance/합성 소스 결과는 채택하지 않고 기존 국면을 돌려준다.
+        """
+        now = time.time()
+        prev = self.last_market_regime
+        prev_label = str(getattr(prev, "label", "") or "")
+        primary = _is_primary_regime_source(raw.source)
+        if (
+            not primary
+            and prev is not None
+            and self._primary_regime_at > 0
+            and now - self._primary_regime_at < MARKET_REGIME_PRIMARY_TTL_SEC
+        ):
+            return prev, prev_label, False
+        label = _hysteresis_label(prev_label, regime_momentum(raw)) if prev_label else str(raw.label)
+        if (
+            prev_label
+            and label != prev_label
+            and label != "bear"
+            and self._regime_changed_at > 0
+            and now - self._regime_changed_at < MARKET_REGIME_MIN_HOLD_SEC
+        ):
+            label = prev_label
+        if label != prev_label:
+            self._regime_changed_at = now
+        label_ko = raw.label_ko if label == raw.label else _REGIME_KO.get(label, raw.label_ko)
+        applied = replace(raw, label=label, label_ko=label_ko)
+        self.last_market_regime = applied
+        if primary:
+            self._primary_regime_at = now
+        return applied, prev_label, True
+
+    def set_ohlcv_loader(
+        self,
+        fn: Optional[
+            Callable[[str], Optional[Tuple[List[float], List[float], List[float], List[float]]]]
+        ],
+    ) -> None:
+        self._ohlcv_loader = fn
+
+    def _load_ohlcv_any(
+        self, code: str
+    ) -> Optional[Tuple[List[float], List[float], List[float], List[float]]]:
+        data = _load_ohlcv(code)
+        if data is not None:
+            return data
+        loader = self._ohlcv_loader
+        if loader is None:
+            return None
+        try:
+            return loader(code)
+        except Exception:
+            return None
 
     def _log(self, msg: str) -> None:
         if self._emit_log:
@@ -647,25 +745,42 @@ class StrategyManager:
             f"AI학습행={self._selector.training_sample_count})"
         )
 
-        # 종목당 yfinance 호출 1회만(3전략 동일 데이터 재사용)
+        # 종목당 yfinance → (실패 시) 외부 로더(키움 캐시) 순으로 로드
         loaded: Dict[str, Tuple[List[float], List[float], List[float], List[float]]] = {}
         for code in codes[:STRATEGY_EVAL_MAX_CODES]:
-            data = _load_ohlcv(code)
+            data = self._load_ohlcv_any(code)
             if data is not None:
                 loaded[code] = data
 
         if not loaded:
             bench = _load_benchmark_closes()
+            if bench is None:
+                # yfinance 지수 실패 시 키움 ETF 로더로 국면만이라도 갱신
+                for idx in ("069500", "229200"):
+                    row = self._load_ohlcv_any(idx)
+                    if row is None:
+                        continue
+                    bc = list(row[0])
+                    if len(bc) >= STRATEGY_EVAL_LOOKBACK:
+                        bench = (bc, f"index:kiwoom:{idx}")
+                        break
             if bench is not None:
                 bc, desc = bench
-                self.last_market_regime = replace(analyze_market_regime(bc), source=desc)
+                applied, _pl, adopted = self.set_market_regime(
+                    replace(analyze_market_regime(bc), source=desc)
+                )
                 self._log(
-                    f"[STRAT] 시장 {self.last_market_regime.label_ko} (지수만, yfinance) "
-                    f"R20={self.last_market_regime.ret_20d_pct:+.1f}%"
+                    f"[STRAT] 시장 {applied.label_ko} (지수만) "
+                    f"R20={applied.ret_20d_pct:+.1f}% [{applied.source}]"
+                    + ("" if adopted else f" (키움지수 우선 — {desc} 미채택)")
                 )
             else:
-                self._log("[STRAT] 유효 OHLCV 없음 — 성과 스냅샷·전략 변경 생략 (활성 전략 유지)")
+                self._log(
+                    "[STRAT] 유효 OHLCV 없음 — 성과 스냅샷·전략 변경 생략 "
+                    "(yfinance 실패 + 키움 캐시 비어 있음)"
+                )
             return
+        self._log(f"[STRAT] OHLCV 로드 {len(loaded)}/{min(len(codes), STRATEGY_EVAL_MAX_CODES)}종목")
 
         snapshots: Dict[str, StrategyRecord] = {}
 
@@ -708,6 +823,15 @@ class StrategyManager:
         # ---------- 시장 국면: 지수 우선, 실패 시 표본 종목 등가 지수 ----------
         regime: MarketRegimeSnapshot
         bench = _load_benchmark_closes()
+        if bench is None:
+            for idx in ("069500", "229200"):
+                row = self._load_ohlcv_any(idx)
+                if row is None:
+                    continue
+                bc = list(row[0])
+                if len(bc) >= 25:
+                    bench = (bc, f"index:kiwoom:{idx}")
+                    break
         if bench is not None:
             bc, desc = bench
             regime = replace(analyze_market_regime(bc), source=desc)
@@ -726,16 +850,15 @@ class StrategyManager:
                     vol_20d_pctp=0.0,
                     source="none",
                 )
-        self.last_market_regime = regime
-        mom = (
-            0.45 * regime.ret_20d_pct
-            + 0.35 * regime.dist_ma20_pct
-            + 0.20 * regime.ma20_slope_pctp
-        )
+        raw_source = regime.source
+        regime, _pl, adopted = self.set_market_regime(regime)
+        mom = regime_momentum(regime)
         self._log(
             f"[STRAT] 시장 {regime.label_ko} mom={mom:+.2f} "
-            f"(임계 상승≥{MARKET_REGIME_MOMENTUM_BULL} 하락≤{MARKET_REGIME_MOMENTUM_BEAR}) "
-            f"R20={regime.ret_20d_pct:+.2f}% MA이격={regime.dist_ma20_pct:+.2f}% "
+            f"(진입 상승≥{MARKET_REGIME_BULL_ENTER} 하락≤{MARKET_REGIME_BEAR_ENTER}, "
+            f"이탈 {MARKET_REGIME_BULL_EXIT}/{MARKET_REGIME_BEAR_EXIT}) "
+            + ("" if adopted else f"(키움지수 우선 — {raw_source} 미채택) ")
+            + f"R20={regime.ret_20d_pct:+.2f}% MA이격={regime.dist_ma20_pct:+.2f}% "
             f"MA20슬로프={regime.ma20_slope_pctp:+.2f}%p 변동성σ={regime.vol_20d_pctp:.2f}%p "
             f"[{regime.source}]"
         )
@@ -746,12 +869,20 @@ class StrategyManager:
 
         prev = self.active_strategy_id
         chosen = self._selector.process_evaluation(records_for_selection, market_feats)
+        # 콜드스타트: 첫 성공 평가에서 pending만 생기고 행=0 → 같은 스냅샷으로 1행 봉인
+        if (
+            self._selector.training_sample_count == 0
+            and self._selector._pending_features is not None
+        ):
+            chosen = self._selector.process_evaluation(records_for_selection, market_feats)
+            self._log("[STRAT] AI학습 콜드스타트 1행 생성")
         if self._selector.last_buffer_reset_reason:
             self._log(
                 f"[STRAT] AI학습 버퍼 초기화: {self._selector.last_buffer_reset_reason}"
             )
             self._selector.last_buffer_reset_reason = ""
         self.last_ai_reason = self._selector.last_decision_reason
+        self._log(f"[STRAT] AI학습행={self._selector.training_sample_count} 방식={self.last_ai_reason}")
         self._persist_evaluation(
             codes=codes,
             loaded_count=len(loaded),
@@ -776,16 +907,27 @@ class StrategyManager:
         else:
             self._log(f"[STRAT] 활성 유지: {chosen} (방식={self.last_ai_reason})")
 
-    def summary_line(self) -> str:
-        """GUI용 한 줄 요약."""
+    def summary_parts(self) -> Dict[str, str]:
+        """GUI용 요약 조각(전략/시장/선택기)."""
         r = self.last_records.get(self.active_strategy_id)
         ai_tag = self.last_ai_reason or "-"
         mr = self.last_market_regime
         mtxt = mr.label_ko if mr else "-"
         if r is None:
-            return f"전략: {self.active_strategy_id} | 시장:{mtxt} | AI:{ai_tag}"
-        return (
-            f"전략: {self.active_strategy_id} "
-            f"R{r.return_pct:+.1f}% WR{r.win_rate*100:.0f}% "
-            f"MDD{r.mdd_pct:.1f} S{r.score:.1f} | 시장:{mtxt} | {ai_tag}"
-        )
+            strat = f"전략: {self.active_strategy_id}"
+        else:
+            strat = (
+                f"전략: {self.active_strategy_id} "
+                f"R{r.return_pct:+.1f}% WR{r.win_rate*100:.0f}% "
+                f"MDD{r.mdd_pct:.1f} S{r.score:.1f}"
+            )
+        return {
+            "strategy": strat,
+            "market": f"시장: {mtxt}",
+            "selector": str(ai_tag),
+        }
+
+    def summary_line(self) -> str:
+        """로그용 한 줄 요약."""
+        p = self.summary_parts()
+        return f"{p['strategy']} | {p['market']} | {p['selector']}"

@@ -3,9 +3,17 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "python .cursor/hooks/daily_log_analysis.py",
+        "command": "python .cursor/hooks/daily_log_analysis.py sessionStart",
         "timeout": 10,
         "failClosed": false
+      }
+    ],
+    "stop": [
+      {
+        "command": "python .cursor/hooks/daily_log_analysis.py stop",
+        "timeout": 10,
+        "failClosed": false,
+        "loop_limit": 1
       }
     ]
   }

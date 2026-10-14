@@ -31,6 +31,8 @@ scan_picks_*.json
 scan_picks_*.jsonl
 waiting_status_log.csv
 
+log/*.flag
+
 # Local backups and shortcuts
 backup_old_*/
 *.bak

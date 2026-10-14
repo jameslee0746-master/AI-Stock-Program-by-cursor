@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_tuned_date": "2026-07-02",
+  "last_tuned_date": "2026-09-23",
   "_mode": "conservative",
   "params": {
     "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
@@ -13,7 +13,7 @@
       "note": "당일 승률 차단 발동에 필요한 최소 매도 횟수 — 보수 모드 auto_tune_ceil 제한"
     },
     "DAILY_WIN_RATE_BLOCK_PCT": {
-      "value": 0.3,
+      "value": 0.4,
       "default": 0.2,
       "min": 0.1,
       "max": 0.4,
@@ -30,23 +30,23 @@
       "note": "최근 N일 손절 횟수 차단 임계값 — 3회 손절 시 차단 (보수 강화)"
     },
     "VOL_ENTRY_RATIO_MIN": {
-      "value": 0.76,
+      "value": 0.68,
       "default": 0.88,
       "min": 0.6,
       "max": 1.2,
       "step": 0.03,
-      "note": "거래량 평균비 최소 기준 — 거래량 필터 복원"
+      "note": "거래량 평균비 최소 기준 — 실전 기준. 모의 유지매매는 런타임 VOL 상한만 낮춤"
     },
     "VOL_ENTRY_GROWTH_MIN": {
-      "value": 0.76,
+      "value": 0.68,
       "default": 0.88,
       "min": 0.6,
       "max": 1.2,
       "step": 0.03,
-      "note": "전일대비 거래량 증가 최소 기준 — 거래량 필터 복원"
+      "note": "전일대비 거래량 증가 최소 기준 — 실전 기준. 모의 유지매매는 런타임 VOL 상한만 낮춤"
     },
     "MA20_ENTRY_GAP_PCT": {
-      "value": -0.009,
+      "value": -0.012,
       "default": -0.012,
       "min": -0.03,
       "max": -0.002,
@@ -54,23 +54,23 @@
       "note": "MA20 이격 허용 상단 축소 — MA20 근처 종목만 진입"
     },
     "AI_PROBA_ENTRY_MIN": {
-      "value": 0.3,
-      "default": 0.42,
-      "min": 0.3,
+      "value": 0.5,
+      "default": 0.5,
+      "min": 0.48,
       "max": 0.6,
       "step": 0.02,
-      "auto_tune_floor": 0.38,
-      "note": "AI 상승 확률 최소 문턱 상향 — 44% 이상만 진입 (보수 강화)"
+      "auto_tune_floor": 0.5,
+      "note": "AI 상승 확률 최소 문턱 — 2단계 고정(>=0.50, 일일전략 완화 금지)"
     },
     "MARKET_OPEN_BUY_GUARD_MINUTES": {
-      "value": 30,
+      "value": 10,
       "default": 15,
       "min": 5,
       "max": 30,
       "step": 5,
       "auto_tune_floor": 15,
       "auto_tune_ceil": 25,
-      "note": "장 시작 후 신규 매수 금지 분"
+      "note": "장 시작 후 신규 매수 금지 분 — 매수0 대응으로 10분"
     },
     "STOP_LOSS_PCT": {
       "value": -0.015,
@@ -89,12 +89,12 @@
       "note": "일일 손실 한도 재강화 — -1.0% 초과 시 당일 매수 전면 중단 (누적손실 -20.23% → 사용자 요청 보수 강화)"
     },
     "MAX_CONCURRENT_POSITIONS": {
-      "value": 1,
+      "value": 2,
       "default": 5,
       "min": 1,
       "max": 5,
       "step": 1,
-      "note": "동시 보유 최대 종목 수 축소 — 1종목만 보유 (누적손실 -20.23% → 사용자 요청 보수 강화)"
+      "note": "동시 보유 최대 종목 수 — 매수0 대응으로 1→2 (기회 창 확대)"
     },
     "REENTRY_STOP_LOSS_PCT": {
       "value": -0.015,
@@ -119,9 +119,93 @@
       "max": 0.2,
       "step": 0.02,
       "note": "종목당 최대 투자비중 축소 — 추정예탁자산의 15%로 제한 (기존 20%, 누적손실 -20.23% → 사용자 요청 보수 강화)"
+    },
+    "RSI_ENTRY_MIN": {
+      "value": 30.0,
+      "default": 30.0,
+      "min": 20.0,
+      "max": 45.0,
+      "step": 1.0,
+      "note": "진입 RSI 하한 — rsi_range_widen 전략용"
+    },
+    "RSI_ENTRY_MAX": {
+      "value": 82.0,
+      "default": 82.0,
+      "min": 70.0,
+      "max": 90.0,
+      "step": 1.0,
+      "note": "진입 RSI 상한 — rsi_range_widen 전략용"
     }
   },
   "history": [
+    {
+      "date": "2026-09-23",
+      "changes": [
+        {
+          "param": "MARKET_OPEN_BUY_GUARD_MINUTES",
+          "from": 15,
+          "to": 10,
+          "reason": "매수0 대응 — 사용자 요청 장초 10분"
+        },
+        {
+          "param": "MAX_CONCURRENT_POSITIONS",
+          "from": 1,
+          "to": 2,
+          "reason": "매수0·기회창 확대 — 사용자 요청"
+        }
+      ]
+    },
+    {
+      "date": "2026-07-27",
+      "changes": [
+        {
+          "param": "VOL_ENTRY_RATIO_MIN",
+          "from": 0.73,
+          "to": 0.67,
+          "reason": "top=vol 상세차단 매칭 — entry_relax_vol 수동보정(AI 미변경)"
+        },
+        {
+          "param": "VOL_ENTRY_GROWTH_MIN",
+          "from": 0.73,
+          "to": 0.67,
+          "reason": "top=vol 상세차단 매칭 — entry_relax_vol 수동보정(AI 미변경)"
+        }
+      ]
+    },
+    {
+      "date": "2026-07-27",
+      "changes": [
+        {
+          "param": "AI_PROBA_ENTRY_MIN",
+          "from": 0.48,
+          "to": 0.5,
+          "reason": "일일전략 오진 수정: AI 문턱 >=0.50 고정 복구"
+        },
+        {
+          "param": "RSI_ENTRY_MIN",
+          "from": null,
+          "to": 30.0,
+          "reason": "rsi_range_widen 실제 RSI 조정 가능하도록 등록"
+        },
+        {
+          "param": "RSI_ENTRY_MAX",
+          "from": null,
+          "to": 82.0,
+          "reason": "rsi_range_widen 실제 RSI 조정 가능하도록 등록"
+        }
+      ]
+    },
+    {
+      "date": "2026-07-20",
+      "changes": [
+        {
+          "param": "AI_PROBA_ENTRY_MIN",
+          "from": 0.3,
+          "to": 0.5,
+          "reason": "2단계: AI문턱 상향 + bear/장초/애프터 하드컷 병행"
+        }
+      ]
+    },
     {
       "date": "2026-07-02",
       "changes": [
@@ -292,6 +376,40 @@
           "from": 0.85,
           "to": 0.82,
           "reason": "전략조건 미충족 25331회+매수0건 → 거래량증가 완화"
+        }
+      ]
+    },
+    {
+      "date": "2026-07-23",
+      "changes": [
+        {
+          "param": "VOL_ENTRY_RATIO_MIN",
+          "from": 0.76,
+          "to": 0.73,
+          "reason": "전략조건 미충족 14097회+매수0건 → 거래량비율 완화"
+        },
+        {
+          "param": "VOL_ENTRY_GROWTH_MIN",
+          "from": 0.76,
+          "to": 0.73,
+          "reason": "전략조건 미충족 14097회+매수0건 → 거래량증가 완화"
+        }
+      ]
+    },
+    {
+      "date": "2026-07-23",
+      "changes": [
+        {
+          "param": "VOL_ENTRY_RATIO_MIN",
+          "from": 0.67,
+          "to": 0.64,
+          "reason": "전략조건 미충족 14097회+매수0건 → 거래량비율 완화"
+        },
+        {
+          "param": "VOL_ENTRY_GROWTH_MIN",
+          "from": 0.67,
+          "to": 0.64,
+          "reason": "전략조건 미충족 14097회+매수0건 → 거래량증가 완화"
         }
       ]
     }

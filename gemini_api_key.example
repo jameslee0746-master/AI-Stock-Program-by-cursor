@@ -1,0 +1,7 @@
+# Gemini API 키를 아래 한 줄만 넣고, 이 파일을
+#   data/gemini_api_key.txt
+# 로 복사하세요. (data/ 는 git 제외)
+#
+# 발급: https://aistudio.google.com/apikey
+# 예:
+# AIzaSy................................

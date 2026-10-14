@@ -1,11 +1,29 @@
 {
-  "_comment": "하루 1개 전략 패키지 자동 선택·적용 라이브러리. 각 패키지는 독립적이며 다음날 성과 평가 후 유지/롤백된다.",
+  "_comment": "하루 1개 전략 패키지 자동 선택·적용 라이브러리. intent=relax|tighten|neutral. AI_PROBA 완화(delta<0)는 금지(2단계). allow_in_conservative=true 인 완화만 보수모드에서 허용. Gemini 추론이 후보 중 우선 선택 가능.",
   "strategies": [
+    {
+      "id": "quality_dip_boost",
+      "name": "우량 눌림·진입 적극화",
+      "description": "매수0·전략조건 미충족 시 VOL/MA 소폭 완화 — 우량 눌림·물타기와 함께 진입 기회 확대",
+      "trigger": "strategy_block > 150 and n_buy == 0",
+      "prefer_reasons": ["vol", "ma"],
+      "intent": "relax",
+      "allow_in_conservative": true,
+      "params": {
+        "VOL_ENTRY_RATIO_MIN": {"delta": -0.05},
+        "VOL_ENTRY_GROWTH_MIN": {"delta": -0.05},
+        "MA20_ENTRY_GAP_PCT": {"delta": -0.004}
+      },
+      "revert_on_loss": true,
+      "priority": 11
+    },
     {
       "id": "win_rate_relax",
       "name": "승률 차단 완화",
       "description": "당일 승률 저조 차단이 50회 이상 → MIN_SELLS 상향, 차단 비율 하향",
       "trigger": "win_rate_block > 50",
+      "intent": "relax",
+      "allow_in_conservative": false,
       "params": {
         "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {"delta": 4},
         "DAILY_WIN_RATE_BLOCK_PCT": {"delta": -0.05}
@@ -16,12 +34,14 @@
     {
       "id": "entry_relax_vol",
       "name": "거래량 진입 조건 완화",
-      "description": "전략조건 미충족 200회+매수 0건 → VOL 기준 완화",
+      "description": "거래량 평균비/증가 부족이 주원인일 때 VOL 기준만 완화(AI 문턱 유지). 모의투자는 매수 0건이어도 유지, 실전은 0매수 시 롤백",
       "trigger": "strategy_block > 200 and n_buy == 0",
+      "prefer_reasons": ["vol"],
+      "intent": "relax",
+      "allow_in_conservative": true,
       "params": {
         "VOL_ENTRY_RATIO_MIN": {"delta": -0.06},
-        "VOL_ENTRY_GROWTH_MIN": {"delta": -0.06},
-        "AI_PROBA_ENTRY_MIN": {"delta": -0.04}
+        "VOL_ENTRY_GROWTH_MIN": {"delta": -0.06}
       },
       "revert_on_loss": true,
       "priority": 9
@@ -29,11 +49,13 @@
     {
       "id": "entry_relax_ma",
       "name": "MA20 진입 범위 완화",
-      "description": "MA 조건 미충족 반복 시 MA20 이격 허용 범위 확대",
+      "description": "MA20 대비 너무 낮음이 주원인일 때 MA20 이격만 완화(AI 문턱 유지)",
       "trigger": "strategy_block > 300 and n_buy == 0",
+      "prefer_reasons": ["ma"],
+      "intent": "relax",
+      "allow_in_conservative": true,
       "params": {
-        "MA20_ENTRY_GAP_PCT": {"delta": -0.006},
-        "AI_PROBA_ENTRY_MIN": {"delta": -0.02}
+        "MA20_ENTRY_GAP_PCT": {"delta": -0.006}
       },
       "revert_on_loss": true,
       "priority": 8
@@ -43,6 +65,8 @@
       "name": "GIVE-UP 방어 강화",
       "description": "매도 GIVE-UP 발생 → 장초 진입 억제 + 재진입 손절 타이트화",
       "trigger": "giveup_count > 0",
+      "intent": "tighten",
+      "allow_in_conservative": true,
       "params": {
         "MARKET_OPEN_BUY_GUARD_MINUTES": {"delta": 5},
         "REENTRY_STOP_LOSS_PCT": {"delta": -0.005}
@@ -55,6 +79,8 @@
       "name": "손실 제어 강화",
       "description": "당일 손실한도 초과 → 포지션 동시 보유 줄이고 재진입 크기 축소",
       "trigger": "daily_loss_block > 0",
+      "intent": "tighten",
+      "allow_in_conservative": true,
       "params": {
         "REENTRY_POSITION_SIZE_FACTOR": {"delta": -0.1},
         "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {"delta": -2}
@@ -65,19 +91,21 @@
     {
       "id": "real_price_missing",
       "name": "현재가 미수신 대응",
-      "description": "현재가 미수신 500회+ → AI 확률 문턱 낮춰 수신 종목만이라도 진입",
+      "description": "현재가 미수신 과다 → 알림용(AI 문턱은 내리지 않음, steady로 대체 권장)",
       "trigger": "no_price_block > 500",
-      "params": {
-        "AI_PROBA_ENTRY_MIN": {"delta": -0.04}
-      },
-      "revert_on_loss": true,
-      "priority": 7
+      "intent": "neutral",
+      "allow_in_conservative": true,
+      "params": {},
+      "revert_on_loss": false,
+      "priority": 3
     },
     {
       "id": "good_day_tighten",
       "name": "수익일 진입 기준 강화",
       "description": "매수 3건+, 승률 차단 0회 → 진입 조건 소폭 강화로 과매매 방지",
       "trigger": "n_buy >= 3 and win_rate_block == 0",
+      "intent": "tighten",
+      "allow_in_conservative": true,
       "params": {
         "VOL_ENTRY_RATIO_MIN": {"delta": 0.03},
         "AI_PROBA_ENTRY_MIN": {"delta": 0.02}
@@ -87,24 +115,27 @@
     },
     {
       "id": "no_trade_day_full_relax",
-      "name": "무매수 완전 완화",
-      "description": "하루 종일 매수 0건 → 전방위 진입 조건 대폭 완화",
+      "name": "무매수 완화(거래량·MA)",
+      "description": "매수 0건+전략차단 과다 → VOL/MA만 완화. AI·장초는 건드리지 않음",
       "trigger": "n_buy == 0 and strategy_block > 100",
+      "prefer_reasons": ["vol", "ma"],
+      "intent": "relax",
+      "allow_in_conservative": false,
       "params": {
-        "VOL_ENTRY_RATIO_MIN": {"delta": -0.09},
-        "VOL_ENTRY_GROWTH_MIN": {"delta": -0.09},
-        "MA20_ENTRY_GAP_PCT": {"delta": -0.009},
-        "AI_PROBA_ENTRY_MIN": {"delta": -0.06},
-        "MARKET_OPEN_BUY_GUARD_MINUTES": {"delta": -5}
+        "VOL_ENTRY_RATIO_MIN": {"delta": -0.06},
+        "VOL_ENTRY_GROWTH_MIN": {"delta": -0.06},
+        "MA20_ENTRY_GAP_PCT": {"delta": -0.006}
       },
       "revert_on_loss": true,
-      "priority": 8
+      "priority": 7
     },
     {
       "id": "sell_timeout_reduce",
       "name": "매도 미체결 대응",
       "description": "매도 timeout 10회 초과 → 재진입 조건 완화로 체결 쉬운 종목 선호",
       "trigger": "timeout_count > 10 and giveup_count == 0",
+      "intent": "relax",
+      "allow_in_conservative": false,
       "params": {
         "REENTRY_STOP_LOSS_PCT": {"delta": 0.005},
         "MARKET_OPEN_BUY_GUARD_MINUTES": {"delta": 5}
@@ -115,20 +146,25 @@
     {
       "id": "rsi_range_widen",
       "name": "RSI 범위 확대",
-      "description": "RSI 이탈 차단 반복 시 허용 범위 확대",
+      "description": "RSI 이탈/약세 차단이 주원인일 때 RSI 허용 범위만 확대(AI 미변경)",
       "trigger": "strategy_block > 150 and n_buy <= 1",
+      "prefer_reasons": ["rsi"],
+      "intent": "relax",
+      "allow_in_conservative": true,
       "params": {
-        "AI_PROBA_ENTRY_MIN": {"delta": -0.02},
-        "MA20_ENTRY_GAP_PCT": {"delta": -0.003}
+        "RSI_ENTRY_MIN": {"delta": -3.0},
+        "RSI_ENTRY_MAX": {"delta": 3.0}
       },
       "revert_on_loss": true,
-      "priority": 6
+      "priority": 8
     },
     {
       "id": "win_rate_tighten",
       "name": "승률 기준 강화",
       "description": "승률 차단 0회 + 매수 5건 이상 → 승률 기준 강화로 품질 유지",
       "trigger": "win_rate_block == 0 and n_buy >= 5",
+      "intent": "tighten",
+      "allow_in_conservative": true,
       "params": {
         "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {"delta": -2},
         "DAILY_WIN_RATE_BLOCK_PCT": {"delta": 0.05}
@@ -141,6 +177,8 @@
       "name": "장초 보호 확대",
       "description": "GIVE-UP 또는 timeout 15회 이상 → 장초 매수 금지 시간 연장",
       "trigger": "giveup_count > 0 or timeout_count >= 15",
+      "intent": "tighten",
+      "allow_in_conservative": true,
       "params": {
         "MARKET_OPEN_BUY_GUARD_MINUTES": {"delta": 5}
       },
@@ -152,6 +190,8 @@
       "name": "장초 보호 단축",
       "description": "무매수 + timeout 0 → 장초 금지 단축으로 조기 진입 기회 확보",
       "trigger": "n_buy == 0 and timeout_count == 0 and giveup_count == 0",
+      "intent": "relax",
+      "allow_in_conservative": false,
       "params": {
         "MARKET_OPEN_BUY_GUARD_MINUTES": {"delta": -5}
       },
@@ -163,6 +203,8 @@
       "name": "재진입 완화",
       "description": "손절 후 재진입 조건이 너무 타이트 → 재진입 손절 소폭 완화",
       "trigger": "timeout_count < 5 and n_buy <= 1 and win_rate_block > 20",
+      "intent": "relax",
+      "allow_in_conservative": false,
       "params": {
         "REENTRY_STOP_LOSS_PCT": {"delta": 0.005},
         "REENTRY_POSITION_SIZE_FACTOR": {"delta": 0.1}
@@ -175,6 +217,8 @@
       "name": "안정 기조 유지",
       "description": "특별한 이상 패턴 없음 → 현행 설정 유지 (아무것도 안 함)",
       "trigger": "default",
+      "intent": "neutral",
+      "allow_in_conservative": true,
       "params": {},
       "revert_on_loss": false,
       "priority": 1

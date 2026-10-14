@@ -3,14 +3,14 @@
   "current": {
     "strategy_id": "steady_state",
     "strategy_name": "안정 기조 유지",
-    "applied_date": "2026-07-03",
+    "applied_date": "2026-10-14",
     "revert_on_loss": false,
     "prev_values": {},
     "changes": {},
     "context": {
       "win_rate_block": 0,
-      "strategy_block": 0,
-      "no_price_block": 1235,
+      "strategy_block": 11409,
+      "no_price_block": 0,
       "daily_loss_block": 0,
       "giveup_count": 0,
       "timeout_count": 0,
@@ -18,394 +18,6 @@
     }
   },
   "history": [
-    {
-      "strategy_id": "giveup_guard",
-      "strategy_name": "GIVE-UP 방어 강화",
-      "applied_date": "2026-06-10",
-      "revert_on_loss": false,
-      "prev_values": {
-        "MARKET_OPEN_BUY_GUARD_MINUTES": 20,
-        "REENTRY_STOP_LOSS_PCT": -0.015
-      },
-      "changes": {
-        "MARKET_OPEN_BUY_GUARD_MINUTES": {
-          "from": 20,
-          "to": 25.0
-        },
-        "REENTRY_STOP_LOSS_PCT": {
-          "from": -0.015,
-          "to": -0.02
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 27046,
-        "no_price_block": 1680,
-        "daily_loss_block": 0,
-        "giveup_count": 1,
-        "timeout_count": 27,
-        "n_buy": 1
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "giveup_guard",
-      "strategy_name": "GIVE-UP 방어 강화",
-      "applied_date": "2026-06-10",
-      "revert_on_loss": false,
-      "prev_values": {
-        "REENTRY_STOP_LOSS_PCT": -0.02
-      },
-      "changes": {
-        "REENTRY_STOP_LOSS_PCT": {
-          "from": -0.02,
-          "to": -0.025
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 27046,
-        "no_price_block": 1680,
-        "daily_loss_block": 0,
-        "giveup_count": 1,
-        "timeout_count": 27,
-        "n_buy": 1
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "real_price_missing",
-      "strategy_name": "현재가 미수신 대응",
-      "applied_date": "2026-06-11",
-      "revert_on_loss": true,
-      "prev_values": {
-        "AI_PROBA_ENTRY_MIN": 0.36
-      },
-      "changes": {
-        "AI_PROBA_ENTRY_MIN": {
-          "from": 0.36,
-          "to": 0.32
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 25944,
-        "no_price_block": 1676,
-        "daily_loss_block": 0,
-        "giveup_count": 3,
-        "timeout_count": 33,
-        "n_buy": 53
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "win_rate_relax",
-      "strategy_name": "승률 차단 완화",
-      "applied_date": "2026-06-12",
-      "revert_on_loss": true,
-      "prev_values": {
-        "DAILY_WIN_RATE_BLOCK_MIN_SELLS": 7,
-        "DAILY_WIN_RATE_BLOCK_PCT": 0.35
-      },
-      "changes": {
-        "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
-          "from": 7,
-          "to": 11.0
-        },
-        "DAILY_WIN_RATE_BLOCK_PCT": {
-          "from": 0.35,
-          "to": 0.3
-        }
-      },
-      "context": {
-        "win_rate_block": 9648,
-        "strategy_block": 6668,
-        "no_price_block": 1513,
-        "daily_loss_block": 0,
-        "giveup_count": 1,
-        "timeout_count": 22,
-        "n_buy": 5
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "win_rate_relax",
-      "strategy_name": "승률 차단 완화",
-      "applied_date": "2026-06-12",
-      "revert_on_loss": true,
-      "prev_values": {
-        "DAILY_WIN_RATE_BLOCK_MIN_SELLS": 5,
-        "DAILY_WIN_RATE_BLOCK_PCT": 0.35
-      },
-      "changes": {
-        "DAILY_WIN_RATE_BLOCK_MIN_SELLS": {
-          "from": 5,
-          "to": 9.0
-        },
-        "DAILY_WIN_RATE_BLOCK_PCT": {
-          "from": 0.35,
-          "to": 0.3
-        }
-      },
-      "context": {
-        "win_rate_block": 9648,
-        "strategy_block": 6668,
-        "no_price_block": 1513,
-        "daily_loss_block": 0,
-        "giveup_count": 1,
-        "timeout_count": 22,
-        "n_buy": 5
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-06-15",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 22318,
-        "no_price_block": 1486,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 1,
-        "n_buy": 3
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-06-16",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 8552,
-        "no_price_block": 1516,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 1,
-        "n_buy": 2
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-06-17",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 0,
-        "no_price_block": 1106,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 1,
-        "n_buy": 1
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-06-18",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 0,
-        "no_price_block": 1328,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 2,
-        "n_buy": 4
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "loss_control_tighten",
-      "strategy_name": "손실 제어 강화",
-      "applied_date": "2026-06-19",
-      "revert_on_loss": false,
-      "prev_values": {
-        "REENTRY_POSITION_SIZE_FACTOR": 0.4
-      },
-      "changes": {
-        "REENTRY_POSITION_SIZE_FACTOR": {
-          "from": 0.4,
-          "to": 0.3
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 6740,
-        "no_price_block": 1018,
-        "daily_loss_block": 13502,
-        "giveup_count": 0,
-        "timeout_count": 19,
-        "n_buy": 3
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "giveup_guard",
-      "strategy_name": "GIVE-UP 방어 강화",
-      "applied_date": "2026-06-22",
-      "revert_on_loss": false,
-      "prev_values": {
-        "MARKET_OPEN_BUY_GUARD_MINUTES": 25.0,
-        "REENTRY_STOP_LOSS_PCT": -0.015
-      },
-      "changes": {
-        "MARKET_OPEN_BUY_GUARD_MINUTES": {
-          "from": 25.0,
-          "to": 30
-        },
-        "REENTRY_STOP_LOSS_PCT": {
-          "from": -0.015,
-          "to": -0.02
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 26081,
-        "no_price_block": 1481,
-        "daily_loss_block": 0,
-        "giveup_count": 1,
-        "timeout_count": 31,
-        "n_buy": 1
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "entry_relax_vol",
-      "strategy_name": "거래량 진입 조건 완화",
-      "applied_date": "2026-06-24",
-      "revert_on_loss": true,
-      "prev_values": {
-        "VOL_ENTRY_RATIO_MIN": 0.82,
-        "VOL_ENTRY_GROWTH_MIN": 0.82,
-        "AI_PROBA_ENTRY_MIN": 0.38
-      },
-      "changes": {
-        "VOL_ENTRY_RATIO_MIN": {
-          "from": 0.82,
-          "to": 0.76
-        },
-        "VOL_ENTRY_GROWTH_MIN": {
-          "from": 0.82,
-          "to": 0.76
-        },
-        "AI_PROBA_ENTRY_MIN": {
-          "from": 0.38,
-          "to": 0.34
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 25331,
-        "no_price_block": 1556,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 0,
-        "n_buy": 0
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "real_price_missing",
-      "strategy_name": "현재가 미수신 대응",
-      "applied_date": "2026-06-25",
-      "revert_on_loss": true,
-      "prev_values": {
-        "AI_PROBA_ENTRY_MIN": 0.34
-      },
-      "changes": {
-        "AI_PROBA_ENTRY_MIN": {
-          "from": 0.34,
-          "to": 0.3
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 25415,
-        "no_price_block": 1613,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 0,
-        "n_buy": 24
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "real_price_missing",
-      "strategy_name": "현재가 미수신 대응",
-      "applied_date": "2026-06-26",
-      "revert_on_loss": true,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 19117,
-        "no_price_block": 1233,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 0,
-        "n_buy": 25
-      },
-      "result": "reverted"
-    },
-    {
-      "strategy_id": "guard_open_reduce",
-      "strategy_name": "장초 보호 단축",
-      "applied_date": "2026-06-27",
-      "revert_on_loss": true,
-      "prev_values": {
-        "MARKET_OPEN_BUY_GUARD_MINUTES": 30
-      },
-      "changes": {
-        "MARKET_OPEN_BUY_GUARD_MINUTES": {
-          "from": 30,
-          "to": 25.0
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 0,
-        "no_price_block": 0,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 0,
-        "n_buy": 0
-      },
-      "result": "reverted"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-06-28",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 0,
-        "no_price_block": 0,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 0,
-        "n_buy": 0
-      },
-      "result": "kept"
-    },
     {
       "strategy_id": "steady_state",
       "strategy_name": "안정 기조 유지",
@@ -489,6 +101,2084 @@
         "giveup_count": 0,
         "timeout_count": 0,
         "n_buy": 1
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-03",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1235,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-04",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-05",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "real_price_missing",
+      "strategy_name": "현재가 미수신 대응",
+      "applied_date": "2026-07-06",
+      "revert_on_loss": true,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 361,
+        "no_price_block": 1361,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 7
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-07",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1327,
+        "daily_loss_block": 20301,
+        "giveup_count": 0,
+        "timeout_count": 1,
+        "n_buy": 2
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-07",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1327,
+        "daily_loss_block": 20301,
+        "giveup_count": 0,
+        "timeout_count": 1,
+        "n_buy": 2
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-08",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 3338,
+        "no_price_block": 1282,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 2,
+        "n_buy": 4
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "win_rate_tighten",
+      "strategy_name": "승률 기준 강화",
+      "applied_date": "2026-07-09",
+      "revert_on_loss": false,
+      "prev_values": {
+        "DAILY_WIN_RATE_BLOCK_PCT": 0.3
+      },
+      "changes": {
+        "DAILY_WIN_RATE_BLOCK_PCT": {
+          "from": 0.3,
+          "to": 0.35
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 12024,
+        "no_price_block": 1193,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 2,
+        "n_buy": 55
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "win_rate_tighten",
+      "strategy_name": "승률 기준 강화",
+      "applied_date": "2026-07-09",
+      "revert_on_loss": false,
+      "prev_values": {
+        "DAILY_WIN_RATE_BLOCK_PCT": 0.35
+      },
+      "changes": {
+        "DAILY_WIN_RATE_BLOCK_PCT": {
+          "from": 0.35,
+          "to": 0.4
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 12024,
+        "no_price_block": 1193,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 2,
+        "n_buy": 55
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "rsi_range_widen",
+      "strategy_name": "RSI 범위 확대",
+      "applied_date": "2026-07-10",
+      "revert_on_loss": true,
+      "prev_values": {
+        "MA20_ENTRY_GAP_PCT": -0.009
+      },
+      "changes": {
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.009,
+          "to": -0.012
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 7517,
+        "no_price_block": 1272,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 1
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-13",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 4523,
+        "no_price_block": 1186,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 6,
+        "n_buy": 3
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-14",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 9727,
+        "no_price_block": 1154,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 5
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "real_price_missing",
+      "strategy_name": "현재가 미수신 대응",
+      "applied_date": "2026-07-15",
+      "revert_on_loss": true,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1208,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "guard_open_reduce",
+      "strategy_name": "장초 보호 단축",
+      "applied_date": "2026-07-15",
+      "revert_on_loss": true,
+      "prev_values": {
+        "MARKET_OPEN_BUY_GUARD_MINUTES": 30
+      },
+      "changes": {
+        "MARKET_OPEN_BUY_GUARD_MINUTES": {
+          "from": 30,
+          "to": 25.0
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1208,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-15",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1208,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-15",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1208,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-16",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 1192,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-19",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "win_rate_tighten",
+      "strategy_name": "승률 기준 강화",
+      "applied_date": "2026-07-20",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 24120,
+        "no_price_block": 1188,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 9
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "win_rate_tighten",
+      "strategy_name": "승률 기준 강화",
+      "applied_date": "2026-07-20",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 24120,
+        "no_price_block": 1188,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 9
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-20",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 24120,
+        "no_price_block": 1188,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 9
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "real_price_missing",
+      "strategy_name": "현재가 미수신 대응",
+      "applied_date": "2026-07-20",
+      "revert_on_loss": true,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 24120,
+        "no_price_block": 1188,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 9
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "real_price_missing",
+      "strategy_name": "현재가 미수신 대응",
+      "applied_date": "2026-07-20",
+      "revert_on_loss": true,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 24120,
+        "no_price_block": 1188,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 9
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-20",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 24120,
+        "no_price_block": 1188,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 9
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "guard_open_reduce",
+      "strategy_name": "장초 보호 단축",
+      "applied_date": "2026-07-21",
+      "revert_on_loss": true,
+      "prev_values": {
+        "MARKET_OPEN_BUY_GUARD_MINUTES": 30
+      },
+      "changes": {
+        "MARKET_OPEN_BUY_GUARD_MINUTES": {
+          "from": 30,
+          "to": 25.0
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-21",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-22",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-07-23",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73,
+        "AI_PROBA_ENTRY_MIN": 0.5
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "AI_PROBA_ENTRY_MIN": {
+          "from": 0.5,
+          "to": 0.46
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14097,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_ma",
+      "strategy_name": "MA20 진입 범위 완화",
+      "applied_date": "2026-07-23",
+      "revert_on_loss": true,
+      "prev_values": {
+        "MA20_ENTRY_GAP_PCT": -0.012,
+        "AI_PROBA_ENTRY_MIN": 0.5
+      },
+      "changes": {
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.018
+        },
+        "AI_PROBA_ENTRY_MIN": {
+          "from": 0.5,
+          "to": 0.48
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14097,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "no_trade_day_full_relax",
+      "strategy_name": "무매수 완전 완화",
+      "applied_date": "2026-07-24",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73,
+        "MA20_ENTRY_GAP_PCT": -0.012,
+        "AI_PROBA_ENTRY_MIN": 0.5,
+        "MARKET_OPEN_BUY_GUARD_MINUTES": 30
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.64
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.64
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.021
+        },
+        "AI_PROBA_ENTRY_MIN": {
+          "from": 0.5,
+          "to": 0.44
+        },
+        "MARKET_OPEN_BUY_GUARD_MINUTES": {
+          "from": 30,
+          "to": 25.0
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14110,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "rsi_range_widen",
+      "strategy_name": "RSI 범위 확대",
+      "applied_date": "2026-07-27",
+      "revert_on_loss": true,
+      "prev_values": {
+        "AI_PROBA_ENTRY_MIN": 0.5,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "AI_PROBA_ENTRY_MIN": {
+          "from": 0.5,
+          "to": 0.48
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.015
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14295,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-27",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14295,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "superseded"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-07-27",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14295,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0,
+        "top_reason": "vol",
+        "note": "restart 후 top=vol인데 steady_state로 떨어진 오선택 보정"
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-07-27",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14295,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_ma",
+      "strategy_name": "MA20 진입 범위 완화",
+      "applied_date": "2026-07-28",
+      "revert_on_loss": true,
+      "prev_values": {
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.018
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 1763,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-29",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-30",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-07-31",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-01",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-02",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-03",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-04",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-05",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-06",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-10",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-11",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-12",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-13",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 1341,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-14",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14748,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-15",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-16",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "real_price_missing",
+      "strategy_name": "현재가 미수신 대응",
+      "applied_date": "2026-08-17",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 10496,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-18",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14171,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-19",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 10,
+        "no_price_block": 55,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-20",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 13591,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-21",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 13743,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-22",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-08-23",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-24",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 13455,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-25",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 8670,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-26",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 13607,
+        "no_price_block": 54,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-27",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14234,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-28",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 14388,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-08-31",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 6791,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-09-01",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-09-02",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 13970,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "entry_relax_vol",
+      "strategy_name": "거래량 진입 조건 완화",
+      "applied_date": "2026-09-17",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.67
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 16455,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-18",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 15649,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-21",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 15710,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-22",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 15433,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-23",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.73,
+        "VOL_ENTRY_GROWTH_MIN": 0.73,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.73,
+          "to": 0.68
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 15460,
+        "no_price_block": 64,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "real_price_missing",
+      "strategy_name": "현재가 미수신 대응",
+      "applied_date": "2026-09-24",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 3065,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-09-26",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-28",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 16408,
+        "no_price_block": 1,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-29",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 16762,
+        "no_price_block": 64,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-09-30",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 19044,
+        "no_price_block": 69,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-01",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 19562,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-02",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 20153,
+        "no_price_block": 24,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-05",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 12166,
+        "no_price_block": 5070,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-06",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 19403,
+        "no_price_block": 26,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-07",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 19875,
+        "no_price_block": 20,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-08",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 13242,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-09",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-10",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "quality_dip_boost",
+      "strategy_name": "우량 눌림·진입 적극화",
+      "applied_date": "2026-10-12",
+      "revert_on_loss": true,
+      "prev_values": {
+        "VOL_ENTRY_RATIO_MIN": 0.68,
+        "VOL_ENTRY_GROWTH_MIN": 0.68,
+        "MA20_ENTRY_GAP_PCT": -0.012
+      },
+      "changes": {
+        "VOL_ENTRY_RATIO_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "VOL_ENTRY_GROWTH_MIN": {
+          "from": 0.68,
+          "to": 0.63
+        },
+        "MA20_ENTRY_GAP_PCT": {
+          "from": -0.012,
+          "to": -0.016
+        }
+      },
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 12488,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "reverted"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-13",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 12135,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
       },
       "result": "kept"
     }
