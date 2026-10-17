@@ -4,6 +4,7 @@ import os
 import datetime
 import threading
 import time
+import traceback
 import csv
 from collections import defaultdict, deque
 import io
@@ -169,6 +170,7 @@ HOGA_MARKET = "03"
 # TR/실시간 스크린 번호(여러 요청을 섞어 쓰지 않도록 고정 권장)
 SCREEN_NO = "0101"
 REAL_SCREEN_NO = "9001"
+VI_REAL_SCREEN_NO = "9051"
 
 # 전략 강화 파라미터
 # (완화 1단계) BUY-BLOCK "MA20 대비 너무 낮음" 완화: MA20 아래 허용 폭 소폭 확대
@@ -216,6 +218,26 @@ STRATEGY_FATIGUE_WINDOW_DAYS = int(os.environ.get("STRATEGY_FATIGUE_WINDOW_DAYS"
 SHADOW_EVIDENCE_MIN_N = int(os.environ.get("SHADOW_EVIDENCE_MIN_N", "30"))
 SHADOW_EVIDENCE_LOOKBACK_DAYS = int(os.environ.get("SHADOW_EVIDENCE_LOOKBACK_DAYS", "30"))
 SHADOW_EVIDENCE_MIN_EDGE = float(os.environ.get("SHADOW_EVIDENCE_MIN_EDGE", "0.003"))
+TICK_STALL_SEC = int(os.environ.get("TICK_STALL_SEC", "180"))
+HALT_DETECT_ENABLED = os.environ.get("HALT_DETECT_ENABLED", "1").strip() not in ("0", "false", "False")
+HALT_TICK_WINDOW_SEC = int(os.environ.get("HALT_TICK_WINDOW_SEC", "60"))
+HALT_ACTIVE_RATIO = float(os.environ.get("HALT_ACTIVE_RATIO", "0.10"))
+HALT_RATE_COLLAPSE = float(os.environ.get("HALT_RATE_COLLAPSE", "0.05"))
+HALT_RESUME_RATIO = float(os.environ.get("HALT_RESUME_RATIO", "0.40"))
+HALT_CONFIRM_SEC = int(os.environ.get("HALT_CONFIRM_SEC", "60"))
+HALT_RESUME_COOLDOWN_MIN = int(os.environ.get("HALT_RESUME_COOLDOWN_MIN", "30"))
+HALT_MAX_MIN = int(os.environ.get("HALT_MAX_MIN", "90"))
+VI_GUARD_ENABLED = os.environ.get("VI_GUARD_ENABLED", "1").strip() not in ("0", "false", "False")
+VI_HOLD_MAX_SEC = int(os.environ.get("VI_HOLD_MAX_SEC", "180"))
+VI_BUY_COOLDOWN_SEC = int(os.environ.get("VI_BUY_COOLDOWN_SEC", "300"))
+STOCK_STATE_GUARD_ENABLED = os.environ.get("STOCK_STATE_GUARD_ENABLED", "1").strip() not in ("0", "false", "False")
+STOCK_STATE_BLOCK_KEYWORDS = (
+    "투자경고", "투자위험", "관리종목", "거래정지", "정리매매", "투자주의환기", "단기과열",
+)
+FEED_RECOVER_ENABLED = os.environ.get("FEED_RECOVER_ENABLED", "1").strip() not in ("0", "false", "False")
+FEED_RECOVER_SILENT_SEC = int(os.environ.get("FEED_RECOVER_SILENT_SEC", "180"))
+FEED_RECOVER_RETRY_GAP_SEC = int(os.environ.get("FEED_RECOVER_RETRY_GAP_SEC", "600"))
+FEED_RECOVER_MAX_PER_DAY = int(os.environ.get("FEED_RECOVER_MAX_PER_DAY", "3"))
 AI_TRAIN_SUPPLEMENT_MC_TOP_N = int(os.environ.get("AI_TRAIN_SUPPLEMENT_MC_TOP_N", "60"))
 AI_N_ESTIMATORS = 200
 AI_RANDOM_STATE = 42
@@ -1556,13 +1578,35 @@ def _compute_atr_pct(
     return (atr / last_close) if last_close > 0 else 0.0
 
 
+_KRX_STATIC_HOLIDAYS = {
+    2026: (
+        "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-02",
+        "2026-05-01", "2026-05-05", "2026-05-25", "2026-06-03", "2026-07-17",
+        "2026-08-17", "2026-09-24", "2026-09-25", "2026-10-05", "2026-10-09",
+        "2026-12-25", "2026-12-31",
+    ),
+    2027: (
+        "2027-01-01", "2027-02-08", "2027-02-09", "2027-03-01", "2027-05-05",
+        "2027-05-13", "2027-08-16", "2027-09-14", "2027-09-15", "2027-09-16",
+        "2027-10-04", "2027-10-11", "2027-12-27", "2027-12-31",
+    ),
+}
+
+# 개장 지연(분), 마감 지연(분). 수능일: 10:00~16:30.
+_KRX_SPECIAL_SESSIONS = {
+    datetime.date(2026, 11, 19): (60, 60),
+}
+
+
 @lru_cache(maxsize=8)
 def _krx_holidays(year: int) -> set:
     """
-    KRX 공휴일/휴장일 조회.
-    조회 실패 시 빈 집합(주말만 휴장 처리)으로 동작.
+    KRX 공휴일/휴장일 = 정적 목록 ∪ pykrx 조회.
+    pykrx 실패 시 정적 목록만 사용(목록 없는 연도는 주말만 휴장).
     """
     out = set()
+    for s in _KRX_STATIC_HOLIDAYS.get(int(year), ()):
+        out.add(datetime.date.fromisoformat(s))
     try:
         from pykrx.website.krx.market import core  # type: ignore
 
@@ -1583,6 +1627,38 @@ def _is_krx_trading_day(d: datetime.date) -> bool:
     if d.weekday() >= 5:
         return False
     return d not in _krx_holidays(d.year)
+
+
+def _krx_session_shift(d: datetime.date) -> Tuple[int, int]:
+    """(개장 지연분, 마감 지연분). 수능일 +60/+60, 연초 첫 거래일 개장 10:00(+60/0)."""
+    if d in _KRX_SPECIAL_SESSIONS:
+        return _KRX_SPECIAL_SESSIONS[d]
+    first = datetime.date(d.year, 1, 1)
+    while first < d and not _is_krx_trading_day(first):
+        first += datetime.timedelta(days=1)
+    if first == d and _is_krx_trading_day(d):
+        return (60, 0)
+    return (0, 0)
+
+
+def _krx_session_bounds(d: datetime.date) -> Dict[str, int]:
+    """장 구간 경계(자정 기준 초). 특수 개장일이면 지연 반영."""
+    o, c = _krx_session_shift(d)
+    h = 3600
+    return {
+        "pre_start": 8 * h + o * 60,
+        "pre_end": 8 * h + 50 * 60 + o * 60,
+        "open": 9 * h + o * 60,
+        "regular_end": 15 * h + 20 * 60 + c * 60,
+        "close": 15 * h + 30 * 60 + c * 60,
+        "after_end": 20 * h,
+        "open_shift_min": o,
+        "close_shift_min": c,
+    }
+
+
+def _qtime_sec(t: "QTime") -> int:
+    return t.hour() * 3600 + t.minute() * 60 + t.second()
 
 
 def _us_market_session_name(now_kst: Optional[datetime.datetime] = None) -> str:
@@ -1799,7 +1875,9 @@ class KiwoomOpenAPI(QAxWidget):
 
         # 콜백(엔진에서 주입)
         self.on_real_price = None  # type: ignore
+        self.on_vi_event = None  # Callable[[str, bool, str], None] | None
         self.on_chejan_data = None  # Callable[[Dict[str, str]], None] | None
+        self._real_codes: List[str] = []
 
     def _chejan_get(self, fid: str) -> str:
         try:
@@ -2419,6 +2497,49 @@ class KiwoomOpenAPI(QAxWidget):
                 fid_list,
                 real_type,
             )
+        self._real_codes = uniq_codes
+        if VI_GUARD_ENABLED:
+            # FID 9068(VI발동구분)을 등록하면 해당 종목의 'VI발동/해제' 실시간이 수신된다.
+            vi_base = int(VI_REAL_SCREEN_NO)
+            for i in range(0, len(uniq_codes), chunk_size):
+                chunk = uniq_codes[i : i + chunk_size]
+                try:
+                    self.dynamicCall(
+                        "SetRealReg(QString, QString, QString, QString)",
+                        str(vi_base + (i // chunk_size)),
+                        ";".join(chunk),
+                        "9068",
+                        "1",
+                    )
+                except Exception:
+                    pass
+
+    def reregister_real(self, fid_list: str = "10") -> int:
+        """실시간 등록 전체 해제 후 재등록. 재등록한 종목 수 반환."""
+        codes = list(self._real_codes)
+        if not codes:
+            return 0
+        try:
+            self.dynamicCall("SetRealRemove(QString, QString)", "ALL", "ALL")
+        except Exception:
+            pass
+        self.set_real_reg(codes, fid_list=fid_list)
+        return len(codes)
+
+    def get_master_stock_flags(self, code: str) -> str:
+        """GetMasterConstruction(감리구분) + GetMasterStockState(종목상태) 원문을 '|'로 합쳐 반환."""
+        clean = str(code).replace(".KS", "").replace(".KQ", "").strip()
+        if len(clean) != 6 or not clean.isdigit():
+            return ""
+        parts = []
+        for fn in ("GetMasterConstruction(QString)", "GetMasterStockState(QString)"):
+            try:
+                s = str(self.dynamicCall(fn, clean) or "").strip()
+                if s:
+                    parts.append(s)
+            except Exception:
+                continue
+        return "|".join(parts)
 
     def _on_receive_tr_data(
         self,
@@ -2669,7 +2790,22 @@ class KiwoomOpenAPI(QAxWidget):
 
     def _on_receive_real_data(self, code: str, real_type: str, real_data: str):
         # 실시간 '주식체결'에서 현재가 FID 10
-        if real_type.strip() != "주식체결":
+        rt = real_type.strip()
+        if rt.startswith("VI"):
+            if self.on_vi_event is not None:
+                try:
+                    def _g(fid: int) -> str:
+                        return str(self.dynamicCall("GetCommRealData(QString, int)", code, fid) or "").strip()
+
+                    kind = _g(9068)
+                    released_at = _g(1224).replace(":", "")
+                    released = kind == "2" or (released_at.isdigit() and int(released_at) > 0)
+                    detail = f"구분={kind or '-'} 적용={_g(1225) or '-'} 발동가={_g(1221) or '-'} 해제시각={released_at or '-'}"
+                    self.on_vi_event(str(code).strip(), released, detail)
+                except Exception:
+                    pass
+            return
+        if rt != "주식체결":
             return
 
         if self.on_real_price is not None:
@@ -3010,6 +3146,29 @@ class TradingEngine:
 
         # 실시간 콜백 연결
         self.kiwoom.on_real_price = self._on_real_price
+        self._code_last_tick: Dict[str, float] = {}
+        self._halt_day: Optional[datetime.date] = None
+        self._halt_active = False
+        self._halt_since: Optional[datetime.datetime] = None
+        self._halt_low_since: Optional[datetime.datetime] = None
+        self._halt_resumed_at: Optional[datetime.datetime] = None
+        self._halt_healthy_seen = False
+        self._halt_long_warned = False
+        self._halt_order_logged: Dict[tuple, float] = {}
+        self._halt_rate_samples: deque = deque()
+        self._halt_rate_baseline = 0.0
+        self.kiwoom.on_vi_event = self._on_vi_event
+        self._vi_active: Dict[str, float] = {}
+        self._vi_released_at: Dict[str, float] = {}
+        self._vi_order_logged: Dict[tuple, float] = {}
+        self._stock_state_day: Optional[datetime.date] = None
+        self._stock_state_cache: Dict[str, str] = {}
+        self._last_any_tick = 0.0
+        self._feed_day: Optional[datetime.date] = None
+        self._feed_watch_since = 0.0
+        self._feed_retries = 0
+        self._feed_last_retry = -1e9
+        self._feed_gave_up = False
         self._real_price_tick_total = 0
         self._real_price_tick_window = 0
         self._real_price_window_started_at = datetime.datetime.now()
@@ -3317,6 +3476,248 @@ class TradingEngine:
         self.current_price_source[code] = "REAL"
         self._real_price_tick_total += 1
         self._real_price_tick_window += 1
+        mono = time.monotonic()
+        self._code_last_tick[code] = mono
+        self._last_any_tick = mono
+
+    def _on_vi_event(self, code: str, released: bool, detail: str) -> None:
+        mono = time.monotonic()
+        try:
+            name = self.kiwoom.get_master_code_name(code)
+        except Exception:
+            name = code
+        if released:
+            if self._vi_active.pop(code, None) is not None:
+                self._vi_released_at[code] = mono
+                self._emit_log(
+                    f"[VI] {name}({code}) 해제 ({detail}) — {VI_BUY_COOLDOWN_SEC // 60}분간 신규매수 금지"
+                )
+            return
+        if code not in self._vi_active:
+            self._emit_log(f"[VI] {name}({code}) 발동 ({detail}) — 해제까지 주문 보류")
+        self._vi_active[code] = mono
+
+    def _vi_is_active(self, code: str) -> bool:
+        started = self._vi_active.get(code)
+        if started is None:
+            return False
+        if time.monotonic() - started >= float(VI_HOLD_MAX_SEC):
+            self._vi_active.pop(code, None)
+            self._vi_released_at[code] = time.monotonic()
+            return False
+        return True
+
+    def _vi_buy_block_reason(self, code: str) -> str:
+        if not VI_GUARD_ENABLED:
+            return ""
+        if self._vi_is_active(code):
+            return "VI 발동 중(단일가) — 신규매수 금지"
+        rel = self._vi_released_at.get(code)
+        if rel is not None:
+            left = float(VI_BUY_COOLDOWN_SEC) - (time.monotonic() - rel)
+            if left > 0:
+                return f"VI 해제 직후 변동성 — 신규매수 금지(잔여 {int((left + 59) // 60)}분)"
+        return ""
+
+    def _vi_order_guard(self, code: str, side: str) -> bool:
+        """종목 VI 발동 중이면 주문 전송을 막고 True 반환(단일가 체결로 불리한 가격 방지)."""
+        if not VI_GUARD_ENABLED or not self._vi_is_active(code):
+            return False
+        now = time.monotonic()
+        key = (code, side)
+        if now - self._vi_order_logged.get(key, -1e9) >= 60.0:
+            self._vi_order_logged[key] = now
+            self._emit_log(f"[VI] {code} {side} 주문 보류 — VI 발동 중 (해제 후 재평가)")
+        return True
+
+    def _stock_state_flags(self, code: str) -> str:
+        today = datetime.date.today()
+        if self._stock_state_day != today:
+            self._stock_state_day = today
+            self._stock_state_cache = {}
+        if code not in self._stock_state_cache:
+            getter = getattr(self.kiwoom, "get_master_stock_flags", None)
+            self._stock_state_cache[code] = getter(code) if callable(getter) else ""
+        return self._stock_state_cache[code]
+
+    def _stock_state_block_reason(self, code: str) -> str:
+        if not STOCK_STATE_GUARD_ENABLED:
+            return ""
+        flags = self._stock_state_flags(code)
+        hits = [k for k in STOCK_STATE_BLOCK_KEYWORDS if k in flags]
+        return f"위험 종목상태({','.join(hits)}) — 신규매수 금지" if hits else ""
+
+    def _log_stock_state_summary(self) -> None:
+        if not STOCK_STATE_GUARD_ENABLED:
+            return
+        flagged = []
+        for c in self.stock_codes or []:
+            r = self._stock_state_block_reason(c)
+            if r:
+                flagged.append(f"{c}:{r.split('(')[1].split(')')[0]}")
+        if flagged:
+            self._emit_log(f"[STOCK-STATE] 매수 제외 {len(flagged)}종목: {', '.join(flagged[:20])}")
+        else:
+            self._emit_log(f"[STOCK-STATE] 대상 {len(self.stock_codes or [])}종목 중 위험 상태 종목 없음")
+
+    def _log_market_calendar_today(self) -> None:
+        today = datetime.date.today()
+        if not _is_krx_trading_day(today):
+            self._emit_log(f"[CALENDAR] {today} 휴장일 — 매매 없음")
+            return
+        b = _krx_session_bounds(today)
+        if b["open_shift_min"] or b["close_shift_min"]:
+            def _hm(sec: int) -> str:
+                return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}"
+
+            self._emit_log(
+                f"[CALENDAR] {today} 특수 개장일 — 정규장 {_hm(b['open'])}~{_hm(b['close'])} "
+                f"(개장 +{b['open_shift_min']}분, 마감 +{b['close_shift_min']}분)"
+            )
+
+    def _maybe_recover_realtime_feed(self) -> None:
+        """정규장 중 실시간 체결이 전 종목 FEED_RECOVER_SILENT_SEC 이상 끊기면 SetRealReg 재등록(일 최대 N회)."""
+        if not FEED_RECOVER_ENABLED or self._halt_active:
+            return
+        if self.market_session_name() != "정규장" or not self.stock_codes:
+            return
+        mono = time.monotonic()
+        today = datetime.date.today()
+        if self._feed_day != today:
+            self._feed_day = today
+            self._feed_watch_since = mono
+            self._feed_retries = 0
+            self._feed_last_retry = -1e9
+            self._feed_gave_up = False
+        silent = mono - max(self._last_any_tick, self._feed_watch_since, self._feed_last_retry)
+        if silent < float(FEED_RECOVER_SILENT_SEC):
+            return
+        if self._feed_retries >= int(FEED_RECOVER_MAX_PER_DAY):
+            if not self._feed_gave_up:
+                self._feed_gave_up = True
+                self._emit_log(
+                    f"[FEED] 실시간 재등록 {self._feed_retries}회 후에도 수신 0/s — "
+                    f"API 연결 이상 가능, 앱 재시작 권장"
+                )
+            return
+        if mono - self._feed_last_retry < float(FEED_RECOVER_RETRY_GAP_SEC):
+            return
+        self._feed_retries += 1
+        self._feed_last_retry = mono
+        try:
+            n = self.kiwoom.reregister_real(fid_list="10")
+            self._emit_log(
+                f"[FEED] 정규장 실시간 수신 {int(silent)}초 0건 — 실시간 재등록 {n}종목 "
+                f"({self._feed_retries}/{int(FEED_RECOVER_MAX_PER_DAY)})"
+            )
+        except Exception as e:
+            self._emit_log(f"[FEED] 실시간 재등록 실패: {e}")
+
+    def _update_market_halt_state(self) -> None:
+        """정규장 중 대상 종목 체결이 일제히 끊기면 시장 거래정지(서킷브레이커 등) 의심 상태로 전환."""
+        if not bool(HALT_DETECT_ENABLED):
+            return
+        now_dt = datetime.datetime.now()
+        today = now_dt.date()
+        if self._halt_day != today:
+            self._halt_day = today
+            self._halt_active = False
+            self._halt_since = None
+            self._halt_low_since = None
+            self._halt_resumed_at = None
+            self._halt_healthy_seen = False
+            self._halt_long_warned = False
+        if self.market_session_name() != "정규장":
+            if self._halt_active:
+                self._halt_active = False
+                self._emit_log("[HALT] 정규장 종료 — 거래정지 의심 상태 해제")
+            self._halt_low_since = None
+            return
+        if _qtime_sec(QTime.currentTime()) < _krx_session_bounds(today)["open"] + 12 * 60:
+            return
+        codes = [c for c in (self.stock_codes or []) if c]
+        if not codes:
+            return
+        mono = time.monotonic()
+        win = float(HALT_TICK_WINDOW_SEC)
+        active = sum(1 for c in codes if mono - self._code_last_tick.get(c, -1e9) <= win)
+        ratio = active / len(codes)
+        samples = self._halt_rate_samples
+        samples.append((mono, int(self._real_price_tick_total)))
+        while len(samples) > 2 and mono - samples[1][0] >= win:
+            samples.popleft()
+        span = mono - samples[0][0]
+        rate = (samples[-1][1] - samples[0][1]) / span if span >= win * 0.8 else None
+        if ratio >= 0.5 and not self._halt_active:
+            self._halt_healthy_seen = True
+            if rate is not None:
+                self._halt_rate_baseline = (
+                    rate if self._halt_rate_baseline <= 0 else 0.98 * self._halt_rate_baseline + 0.02 * rate
+                )
+        base = self._halt_rate_baseline
+        rate_collapsed = (
+            rate is not None and base >= 20.0 and rate < float(HALT_RATE_COLLAPSE) * base
+        )
+        if not self._halt_active:
+            if not self._halt_healthy_seen or (ratio >= float(HALT_ACTIVE_RATIO) and not rate_collapsed):
+                self._halt_low_since = None
+                return
+            if self._halt_low_since is None:
+                self._halt_low_since = now_dt
+                return
+            if (now_dt - self._halt_low_since).total_seconds() < float(HALT_CONFIRM_SEC):
+                return
+            self._halt_active = True
+            self._halt_since = self._halt_low_since
+            self._halt_long_warned = False
+            self._emit_log(
+                f"[HALT] 시장 거래정지 의심(서킷브레이커 등) {self._halt_since:%H:%M:%S}부터 — "
+                f"최근{int(win)}초 체결 종목 {active}/{len(codes)} · 수신 {rate or 0:.1f}/s (평소 {base:.0f}/s) "
+                f"— 신규매수·주문 중지"
+            )
+            return
+        if ratio >= float(HALT_RESUME_RATIO) and (base < 20.0 or (rate or 0) >= 0.3 * base):
+            dur = (now_dt - (self._halt_since or now_dt)).total_seconds() / 60.0
+            self._halt_active = False
+            self._halt_resumed_at = now_dt
+            self._halt_low_since = None
+            self._emit_log(
+                f"[HALT] 거래 재개 감지 {now_dt:%H:%M:%S} (정지 {dur:.0f}분, 체결 종목 {active}/{len(codes)}) — "
+                f"{int(HALT_RESUME_COOLDOWN_MIN)}분간 신규매수 금지"
+            )
+            return
+        if (
+            not self._halt_long_warned
+            and self._halt_since is not None
+            and (now_dt - self._halt_since).total_seconds() >= float(HALT_MAX_MIN) * 60.0
+        ):
+            self._halt_long_warned = True
+            self._emit_log(
+                f"[HALT] {int(HALT_MAX_MIN)}분 넘게 체결 없음 — 당일 거래종료(서킷 3단계) 또는 시세 장애 가능. "
+                f"장 재개가 확인되지 않으면 앱 재시작 권장"
+            )
+
+    def _market_halt_buy_block_reason(self) -> str:
+        if self._halt_active:
+            return "시장 거래정지 의심(서킷브레이커) — 신규매수 금지"
+        if self._halt_resumed_at is not None:
+            left = float(HALT_RESUME_COOLDOWN_MIN) * 60.0 - (
+                datetime.datetime.now() - self._halt_resumed_at
+            ).total_seconds()
+            if left > 0:
+                return f"거래 재개 후 {int(HALT_RESUME_COOLDOWN_MIN)}분 신규매수 금지(잔여 {int(left // 60) + 1}분)"
+        return ""
+
+    def _halt_order_guard(self, code: str, side: str) -> bool:
+        """거래정지 의심 중이면 주문 전송을 막고 True 반환."""
+        if not self._halt_active:
+            return False
+        now = time.monotonic()
+        key = (code, side)
+        if now - self._halt_order_logged.get(key, -1e9) >= 300.0:
+            self._halt_order_logged[key] = now
+            self._emit_log(f"[HALT] {code} {side} 주문 보류 — 시장 거래정지 의심 중 (재개 후 재평가)")
+        return True
 
     def consume_real_price_stats(self) -> Dict[str, float]:
         """
@@ -3372,6 +3773,17 @@ class TradingEngine:
             f"  DAILY_STRATEGY_LEARNING=ON (국면·오답노트 n≥{SHADOW_EVIDENCE_MIN_N}·"
             f"연속되돌림≥{STRATEGY_FATIGUE_REVERTS}/{STRATEGY_FATIGUE_WINDOW_DAYS}일 반영)",
             f"  REASONING_REPORT={'ON' if _reasoning is not None else 'OFF'} (일일전략 후 log/*_reasoning.txt)",
+            f"  TICK_STALL_WATCHDOG=ON (on_tick {TICK_STALL_SEC}s 정지 시 log/*_stall.txt 스택 기록)",
+            f"  HALT_DETECT={'ON' if HALT_DETECT_ENABLED else 'OFF'} (체결종목<{HALT_ACTIVE_RATIO:.0%} "
+            f"{HALT_CONFIRM_SEC}s→주문중지, 재개 후 {HALT_RESUME_COOLDOWN_MIN}분 신규매수 금지)",
+            f"  KRX_CALENDAR=ON (휴장 {sum(len(v) for v in _KRX_STATIC_HOLIDAYS.values())}일 정적목록 "
+            f"{min(_KRX_STATIC_HOLIDAYS)}~{max(_KRX_STATIC_HOLIDAYS)}+pykrx, 수능·연초 개장지연)",
+            f"  STOCK_STATE_GUARD={'ON' if STOCK_STATE_GUARD_ENABLED else 'OFF'} "
+            f"({'/'.join(STOCK_STATE_BLOCK_KEYWORDS)} 매수 제외)",
+            f"  VI_GUARD={'ON' if VI_GUARD_ENABLED else 'OFF'} (발동 중 주문보류 최대 {VI_HOLD_MAX_SEC}s, "
+            f"해제 후 {VI_BUY_COOLDOWN_SEC // 60}분 신규매수 금지)",
+            f"  FEED_RECOVER={'ON' if FEED_RECOVER_ENABLED else 'OFF'} (정규장 {FEED_RECOVER_SILENT_SEC}s 무수신→"
+            f"재등록, 일 {FEED_RECOVER_MAX_PER_DAY}회)",
             f"  QUALITY_AVG_DOWN_ENABLED={bool(QUALITY_AVG_DOWN_ENABLED)} "
             f"max={int(QUALITY_AVG_DOWN_MAX)} "
             f"step={float(QUALITY_AVG_DOWN_STEP_PCT):.0%} "
@@ -3403,12 +3815,13 @@ class TradingEngine:
     def _market_phase_tag(self) -> str:
         """현재 시각에 해당하는 장 구간 태그를 반환한다."""
         try:
-            now = QTime.currentTime()
-            if QTime(8, 0, 0) <= now <= QTime(8, 59, 59):
-                return "PRE"   # 프리마켓 08:00~08:59
-            if QTime(9, 0, 0) <= now < QTime(15, 30, 0):
-                return "MKT"   # 정규장 09:00~15:30
-            if QTime(15, 30, 0) <= now < QTime(20, 0, 0):
+            b = _krx_session_bounds(datetime.date.today())
+            s = _qtime_sec(QTime.currentTime())
+            if b["pre_start"] <= s < b["open"]:
+                return "PRE"   # 프리마켓 08:00~08:59 (특수일 지연)
+            if b["open"] <= s < b["close"]:
+                return "MKT"   # 정규장 09:00~15:30 (특수일 지연)
+            if b["close"] <= s < b["after_end"]:
                 return "AFT"   # 애프터마켓 15:30~20:00
             return "OUT"       # 장외 20:00 이후 / 08:00 이전
         except Exception:
@@ -3674,12 +4087,13 @@ class TradingEngine:
         today = datetime.date.today()
         if not _is_krx_trading_day(today):
             return "휴장"
-        now = QTime.currentTime()
-        if QTime(8, 0, 0) <= now <= QTime(8, 50, 0):
+        b = _krx_session_bounds(today)
+        s = _qtime_sec(QTime.currentTime())
+        if b["pre_start"] <= s <= b["pre_end"]:
             return "프리마켓"
-        if QTime(9, 0, 0) <= now < QTime(15, 20, 0):
+        if b["open"] <= s < b["regular_end"]:
             return "정규장"
-        if QTime(15, 30, 0) <= now <= QTime(20, 0, 0):
+        if b["close"] <= s <= b["after_end"]:
             return "애프터마켓"
         return "장외"
 
@@ -3983,10 +4397,9 @@ class TradingEngine:
         guard_min = self._effective_market_open_guard_minutes()
         if guard_min <= 0 or self.market_session_name() != "정규장":
             return False
-        now = QTime.currentTime()
-        if now.hour() != 9 or now < QTime(9, 0, 0):
-            return False
-        return (now.hour() * 60 + now.minute()) < (9 * 60 + guard_min)
+        open_s = _krx_session_bounds(datetime.date.today())["open"]
+        s = _qtime_sec(QTime.currentTime())
+        return open_s <= s < open_s + guard_min * 60
 
     def _today_had_buy(self) -> bool:
         today = datetime.date.today()
@@ -5704,6 +6117,18 @@ class TradingEngine:
         if bool(BLOCK_BUY_IN_AFTER_HOURS) and session == "애프터마켓":
             self._log_buy_block(code, "애프터마켓 신규매수 금지", interval_sec=300.0)
             return False
+        halt_reason = self._market_halt_buy_block_reason()
+        if halt_reason:
+            self._log_buy_block(code, halt_reason, interval_sec=300.0)
+            return False
+        state_reason = self._stock_state_block_reason(code)
+        if state_reason:
+            self._log_buy_block(code, state_reason, interval_sec=1800.0)
+            return False
+        vi_reason = self._vi_buy_block_reason(code)
+        if vi_reason:
+            self._log_buy_block(code, vi_reason, interval_sec=120.0)
+            return False
         if bool(BLOCK_BUY_IN_BEAR) and self._is_market_weak():
             # 지수 확정 bear만 하드블록. composite 약세는 편향 가능해 통과시키고
             # 기존 MARKET_WEAK_AI_ENTRY_ADD / 비중축소 경로로만 보수화한다.
@@ -6277,6 +6702,8 @@ class TradingEngine:
         *,
         avg_down: bool = False,
     ) -> None:
+        if self._halt_order_guard(code, "BUY") or self._vi_order_guard(code, "BUY"):
+            return
         # 2026-07-14: 매도쪽 sell_market 가드와 동일. 이미 추적 중인 매수주문이 있는데
         # timeout 쿨다운만 보고 재호출하면 pending_orders[code]가 덮어써져 1차 주문의
         # 늦은 체결 추적이 끊기고, 브로커에는 주문이 2건 쌓인다(044960 830주 사고).
@@ -6427,6 +6854,8 @@ class TradingEngine:
             self._emit_log(f"[FEATURE] 매수태그 {code} " + "/".join(tags))
 
     def sell_market(self, code: str, reason: str = "") -> None:
+        if self._halt_order_guard(code, "SELL") or self._vi_order_guard(code, "SELL"):
+            return
         # 2026-07-09: 이미 추적 중인 매도주문이 있는데 또 sell_market이 호출되면
         # pending_orders[code]가 덮어써져서 첫 주문의 체결 추적이 끊긴다(004985 사고).
         # 아직 살아있는(guard 기간 이내) 매도주문 추적이 있으면 중복 주문을 거부한다.
@@ -6943,7 +7372,7 @@ class TradingEngine:
         if self._daily_report_done_date == now.date():
             return
         # 정규장 종료 이후에만 1회 출력
-        if QTime.currentTime() < QTime(15, 30, 0):
+        if _qtime_sec(QTime.currentTime()) < _krx_session_bounds(now.date())["close"]:
             return
         tracker = getattr(self, "trade_tracker", None)
         if tracker is None:
@@ -8296,6 +8725,7 @@ class TradingEngine:
         self.train_random_forest()
 
     def on_tick(self):
+        self._last_tick_at = time.monotonic()
         today = datetime.date.today()
         self._maybe_reset_daily_state(today)
 
@@ -8321,6 +8751,12 @@ class TradingEngine:
             self._maybe_write_reasoning_report()
             # 장외에도 AI 재학습 허용 (피처 스키마 변경 후 익일 오전까지 빈 모델로 남는 문제 방지)
             self._maybe_train_ai_model()
+            return
+
+        self._update_market_halt_state()
+        self._maybe_recover_realtime_feed()
+        if self._halt_active:
+            self._reconcile_orders_and_portfolio()
             return
 
         self._maybe_start_auto_backtest()
@@ -8470,8 +8906,53 @@ class TradingEngine:
 
         # 실시간 등록: "주식체결" fid 10(현재가)
         self.kiwoom.set_real_reg(self.stock_codes, fid_list="10")
+        self._log_stock_state_summary()
+        self._log_market_calendar_today()
 
+        self._last_tick_at = time.monotonic()
         self.timer.start()
+        self._start_tick_stall_watchdog()
+
+    def _start_tick_stall_watchdog(self) -> None:
+        """on_tick 이 TICK_STALL_SEC 이상 다시 시작되지 않으면 전 스레드 스택을 log/*_stall.txt 로 남긴다."""
+        if getattr(self, "_stall_watchdog_started", False):
+            return
+        self._stall_watchdog_started = True
+
+        def _run() -> None:
+            dumped_for = None
+            while True:
+                time.sleep(30)
+                last = getattr(self, "_last_tick_at", None)
+                if last is None:
+                    continue
+                gap = time.monotonic() - last
+                if gap < TICK_STALL_SEC:
+                    dumped_for = None
+                    continue
+                if dumped_for == last:
+                    continue
+                dumped_for = last
+                try:
+                    names = {t.ident: t.name for t in threading.enumerate()}
+                    now = datetime.datetime.now()
+                    lines = [f"[{now:%H:%M:%S}] on_tick 정지 {gap:.0f}s — 전 스레드 스택"]
+                    for ident, frame in sys._current_frames().items():
+                        lines.append(f"\n--- thread {names.get(ident, '?')} ({ident}) ---")
+                        lines += [l.rstrip() for l in traceback.format_stack(frame)]
+                    path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "log", f"{now:%Y-%m-%d}_stall.txt"
+                    )
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write("\n".join(lines) + "\n\n")
+                    self._emit_log(
+                        f"[STALL] on_tick {gap:.0f}s 정지 — 스레드 스택 기록 → log/{now:%Y-%m-%d}_stall.txt "
+                        f"(매매 루프 멈춤: 앱 재시작 필요)"
+                    )
+                except Exception as e:
+                    self._emit_log(f"[STALL] 스택 기록 실패: {e}")
+
+        threading.Thread(target=_run, daemon=True, name="tick-stall-watchdog").start()
 
     def update_targets(self, codes: List[str]) -> None:
         """스캔 결과 종목으로 매매 대상을 런타임에 갱신.
@@ -8498,6 +8979,7 @@ class TradingEngine:
         # 현재가 선반영은 GUI 쪽 백그라운드 프리패치에서 처리(대량 종목 시 UI 정지 방지)
 
         self.kiwoom.set_real_reg(self.stock_codes, fid_list="10")
+        self._log_stock_state_summary()
         self._maybe_start_auto_backtest(force=True)
         if self.on_log is not None:
             try:

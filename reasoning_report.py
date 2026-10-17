@@ -107,6 +107,17 @@ def _regime_section(day: str, day_log: List[str]) -> Tuple[List[str], str]:
     for l in changes[:5]:
         m = re.search(r"(mom=[^ ]+).*\((변경:[^)]+)\)", l)
         lines.append(f"    {_hhmm(l)} {m.group(2) + ' ' + m.group(1) if m else l[:120]}")
+    halts = [l for l in day_log if "[HALT]" in l and ("거래정지 의심" in l or "재개" in l or "체결 없음" in l) and "주문 보류" not in l]
+    if halts:
+        lines.append(f"  시장 거래정지 감지 {len(halts)}건:")
+        lines += [f"    {_hhmm(l)} {l.split('[HALT]', 1)[-1].strip()[:130]}" for l in halts[:6]]
+    events = [
+        l for l in day_log
+        if any(t in l for t in ("[VI]", "[FEED]", "[STOCK-STATE]", "[CALENDAR]")) and "주문 보류" not in l
+    ]
+    if events:
+        lines.append(f"  시장/종목 이벤트 {len(events)}건:")
+        lines += [f"    {_hhmm(l)} {l.split('] ', 1)[-1].strip()[:130]}" for l in events[:8]]
     chg = _index_daily_changes()
     rows = [(d, labels[d], chg[d]) for d in sorted(chg) if d in labels and d <= day][-REGIME_VERIFY_DAYS:]
     same_hit = sum(1 for d, lab, c in rows if _regime_agrees(lab, c))
