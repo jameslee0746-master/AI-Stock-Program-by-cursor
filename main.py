@@ -652,8 +652,8 @@ TARGET_TTL_DAYS = 0
 HARD_MAX_CUMULATED_TARGETS = int(os.environ.get("HARD_MAX_CUMULATED_TARGETS", "1000"))
 KEEPALIVE_INTERVAL_MIN = 30
 TOTAL_LIMIT_KRW = float(os.environ.get("TOTAL_LIMIT_KRW", "10000000"))
-# 대량 진입대기 표시 시 UI 부하 완화
-UI_TABLE_REFRESH_INTERVAL_SEC = 3.0
+# 대량 진입대기 표시 시 UI 부하 완화 (화면 구성 동일, 갱신만 가볍게)
+UI_TABLE_REFRESH_INTERVAL_SEC = 4.0
 UI_WAITING_DISPLAY_LIMIT = 300
 _SCAN_OHLCV_CACHE: Dict[str, tuple] = {}
 _SCAN_OHLCV_CACHE_LOCK = threading.Lock()
@@ -3072,6 +3072,8 @@ class TradingEngine:
         self.ai_model_loaded_from_disk: bool = False
         self._ai_needs_retrain: bool = False
         self._ai_train_attempted_date: Optional[datetime.date] = None
+        self._ai_train_scheduled: bool = False
+        self._ai_training_active: bool = False
         # 3단계: 학습 품질 메트릭(GUI·매수규모 연동)
         self.ai_val_auc: Optional[float] = None
         self.ai_val_brier: Optional[float] = None
@@ -3784,6 +3786,10 @@ class TradingEngine:
             f"해제 후 {VI_BUY_COOLDOWN_SEC // 60}분 신규매수 금지)",
             f"  FEED_RECOVER={'ON' if FEED_RECOVER_ENABLED else 'OFF'} (정규장 {FEED_RECOVER_SILENT_SEC}s 무수신→"
             f"재등록, 일 {FEED_RECOVER_MAX_PER_DAY}회)",
+            "  NEWS_NONBLOCK=ON (매수판정은 캐시만·miss는 백그라운드 조회, on_tick HTTP 차단 방지)",
+            f"  UI_TABLE_LIGHT=ON (진입대기 등 테이블 {UI_TABLE_REFRESH_INTERVAL_SEC:.0f}s·"
+            f"변경셀만 갱신·표시상한 {UI_WAITING_DISPLAY_LIMIT})",
+            "  AI_TRAIN_DEFERRED=ON (재학습은 on_tick 밖 QTimer·정규장 제외, 학습 중 하트비트만)",
             f"  QUALITY_AVG_DOWN_ENABLED={bool(QUALITY_AVG_DOWN_ENABLED)} "
             f"max={int(QUALITY_AVG_DOWN_MAX)} "
             f"step={float(QUALITY_AVG_DOWN_STEP_PCT):.0%} "
@@ -8706,26 +8712,65 @@ class TradingEngine:
             self._last_periodic_holdings_sync_at = now
 
     def _maybe_train_ai_model(self) -> None:
-        """모델이 없거나(또는 오래되어 재학습 예약)이면 하루 1회 학습. 장외에도 허용."""
+        """
+        모델이 없거나 오래되면 하루 1회 재학습을 예약한다.
+        실제 학습(키움 일봉 TR)은 on_tick 밖에서 QTimer로 돌려 매매 루프 STALL을 막는다.
+        정규장 중에는 예약하지 않는다.
+        """
         if not AI_AVAILABLE:
             return
         needs_retrain = bool(getattr(self, "_ai_needs_retrain", False))
         if self.ai_model is not None and not needs_retrain:
             return
         today = datetime.date.today()
-        # 실패해도 날짜만 찍히던 예전 버그 대신, 시도 날짜로 하루 1회 제한
         if getattr(self, "_ai_train_attempted_date", None) == today:
             return
-        self._ai_train_attempted_date = today
+        if getattr(self, "_ai_train_scheduled", False) or getattr(self, "_ai_training_active", False):
+            return
+        if self.market_session_name() == "정규장":
+            return
+        self._ai_train_scheduled = True
         phase = self._market_phase_tag()
         self._emit_log(
-            f"[AI] 재학습 시작 (phase={phase}, 실전라벨={'ON' if AI_USE_LIVE_TRADE_LABELS else 'OFF'}"
-            f"{', stale교체' if needs_retrain else ''})"
+            f"[AI] 재학습 예약(매매루프 비차단) phase={phase}, "
+            f"실전라벨={'ON' if AI_USE_LIVE_TRADE_LABELS else 'OFF'}"
+            f"{', stale교체' if needs_retrain else ''}"
         )
-        self.train_random_forest()
+        QTimer.singleShot(300, self._run_ai_train_deferred)
+
+    def _run_ai_train_deferred(self) -> None:
+        """QTimer 콜백: 키움 TR이 포함된 학습을 on_tick 밖에서 수행."""
+        self._ai_train_scheduled = False
+        if getattr(self, "_ai_training_active", False):
+            return
+        if not AI_AVAILABLE:
+            return
+        today = datetime.date.today()
+        if getattr(self, "_ai_train_attempted_date", None) == today:
+            return
+        needs_retrain = bool(getattr(self, "_ai_needs_retrain", False))
+        if self.ai_model is not None and not needs_retrain:
+            return
+        if self.market_session_name() == "정규장":
+            return
+        self._ai_train_attempted_date = today
+        self._ai_training_active = True
+        phase = self._market_phase_tag()
+        try:
+            self._emit_log(
+                f"[AI] 재학습 시작 (deferred/{phase}, 실전라벨="
+                f"{'ON' if AI_USE_LIVE_TRADE_LABELS else 'OFF'}"
+                f"{', stale교체' if needs_retrain else ''})"
+            )
+            self.train_random_forest()
+        finally:
+            self._ai_training_active = False
 
     def on_tick(self):
         self._last_tick_at = time.monotonic()
+        # AI 재학습(키움 TR)이 메인스레드에서 돌 때: 하트비트만 남겨 STALL 오탐·중첩 학습 방지
+        if getattr(self, "_ai_training_active", False):
+            return
         today = datetime.date.today()
         self._maybe_reset_daily_state(today)
 
@@ -8845,11 +8890,11 @@ class TradingEngine:
                 except OSError:
                     pass
                 self._ai_needs_retrain = True
-                self._emit_log("[AI] 강제 재학습 플래그 감지 — 기존 모델 유지하며 다음 틱에서 재학습")
+                self._emit_log("[AI] 강제 재학습 플래그 감지 — 기존 모델 유지하며 장외 deferred 재학습")
             if not loaded:
-                self._emit_log("[AI] 디스크 모델 없음/불일치 — 다음 틱에서 재학습 예정")
+                self._emit_log("[AI] 디스크 모델 없음/불일치 — 장외 deferred 재학습 예정")
             elif getattr(self, "_ai_needs_retrain", False):
-                self._emit_log("[AI] 오래된 모델 임시 사용 중 — 재학습 예약됨")
+                self._emit_log("[AI] 오래된 모델 임시 사용 중 — 장외 deferred 재학습 예약됨")
         # 시작 시 잔고만 동기화( MA는 라운드로빈으로 점진 갱신 )
         self.sync_portfolio(password=account_password)
         today = datetime.date.today()
@@ -9262,6 +9307,9 @@ class TradingWindow(QMainWindow):
         self.tbl_waiting.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.tbl_waiting.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.tbl_waiting.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        _wh0 = self.tbl_waiting.horizontalHeaderItem(0)
+        if _wh0 is not None:
+            _wh0.setTextAlignment(int(Qt.AlignLeft | Qt.AlignVCenter))
         self.tbl_waiting.verticalHeader().setDefaultSectionSize(24)
         self.tbl_waiting.setMinimumHeight(360)
         self.tbl_orders = QTableWidget(0, 7)
@@ -9313,6 +9361,9 @@ class TradingWindow(QMainWindow):
         self._last_zero_target_warn_at: Optional[datetime.datetime] = None
         self._last_zero_real_warn_at: Optional[datetime.datetime] = None
         self._last_table_shape: Optional[tuple] = None
+        self._last_waiting_fp: Optional[tuple] = None
+        self._last_holding_fp: Optional[tuple] = None
+        self._last_order_fp: Optional[tuple] = None
         self._last_column_resize_at: Optional[datetime.datetime] = None
         self._last_target_table_refresh_at: Optional[datetime.datetime] = None
         self._last_after_hours_log_at: Dict[str, datetime.datetime] = {}
@@ -10331,6 +10382,42 @@ class TradingWindow(QMainWindow):
             rt = float(row.get("ret", 0.0))
             self._append_log(f"[BT] top {code}: {rt*100:+.2f}%")
 
+    def _apply_table_rows(
+        self,
+        table: "QTableWidget",
+        rows: List[List[str]],
+        *,
+        left_cols: Optional[Set[int]] = None,
+    ) -> bool:
+        """셀 텍스트가 바뀐 칸만 갱신. left_cols는 왼쪽 정렬 열 번호. 변경이 있으면 True."""
+        changed = False
+        left = left_cols or set()
+        table.setUpdatesEnabled(False)
+        try:
+            if table.rowCount() != len(rows):
+                table.setRowCount(len(rows))
+                changed = True
+            for i, vals in enumerate(rows):
+                for c, v in enumerate(vals):
+                    s = str(v)
+                    align = int(Qt.AlignLeft | Qt.AlignVCenter) if c in left else int(Qt.AlignCenter)
+                    item = table.item(i, c)
+                    if item is None:
+                        item = QTableWidgetItem(s)
+                        item.setTextAlignment(align)
+                        table.setItem(i, c, item)
+                        changed = True
+                    else:
+                        if item.text() != s:
+                            item.setText(s)
+                            changed = True
+                        if int(item.textAlignment()) != align:
+                            item.setTextAlignment(align)
+                            changed = True
+        finally:
+            table.setUpdatesEnabled(True)
+        return changed
+
     def _refresh_target_table(self) -> None:
         if self.engine is None:
             return
@@ -10579,30 +10666,30 @@ class TradingWindow(QMainWindow):
             except Exception:
                 pass
 
-            self.tbl_holdings.setRowCount(len(holding_rows))
-            for i, vals in enumerate(holding_rows):
-                for c, v in enumerate(vals):
-                    item = QTableWidgetItem(str(v))
-                    item.setTextAlignment(Qt.AlignCenter)
-                    self.tbl_holdings.setItem(i, c, item)
-            self.tbl_waiting.setRowCount(len(waiting_rows))
-            for i, vals in enumerate(waiting_rows):
-                for c, v in enumerate(vals):
-                    self.tbl_waiting.setItem(i, c, QTableWidgetItem(str(v)))
             hidden_waiting = max(0, len(waiting_codes) - len(waiting_rows))
+            waiting_display = list(waiting_rows)
             if hidden_waiting > 0:
-                i = self.tbl_waiting.rowCount()
-                self.tbl_waiting.insertRow(i)
-                summary = f"... 외 {hidden_waiting:,}종목"
-                for c, v in enumerate([summary, "-", "진입 대기", "표시 제한"]):
-                    self.tbl_waiting.setItem(i, c, QTableWidgetItem(str(v)))
-            self.tbl_orders.setRowCount(len(order_rows))
-            for i, vals in enumerate(order_rows):
-                for c, v in enumerate(vals):
-                    self.tbl_orders.setItem(i, c, QTableWidgetItem(str(v)))
+                waiting_display.append([f"... 외 {hidden_waiting:,}종목", "-", "진입 대기", "표시 제한"])
+
+            holding_fp = tuple(tuple(r) for r in holding_rows)
+            waiting_fp = tuple(tuple(r) for r in waiting_display)
+            order_fp = tuple(tuple(r) for r in order_rows)
+            holdings_changed = holding_fp != self._last_holding_fp
+            waiting_changed = waiting_fp != self._last_waiting_fp
+            orders_changed = order_fp != self._last_order_fp
+            if holdings_changed:
+                self._apply_table_rows(self.tbl_holdings, holding_rows)
+                self._last_holding_fp = holding_fp
+            if waiting_changed:
+                self._apply_table_rows(self.tbl_waiting, waiting_display, left_cols={0})
+                self._last_waiting_fp = waiting_fp
+            if orders_changed:
+                self._apply_table_rows(self.tbl_orders, order_rows)
+                self._last_order_fp = order_fp
+
             # 리사이즈 비용이 커서(특히 테스트스캔 ON 대량 행) 변화 시에만 간헐 수행
             now_resize = datetime.datetime.now()
-            shape = (len(holding_rows), len(waiting_rows), len(order_rows))
+            shape = (len(holding_rows), len(waiting_display), len(order_rows))
             need_resize = shape != self._last_table_shape
             due_resize = (
                 self._last_column_resize_at is None

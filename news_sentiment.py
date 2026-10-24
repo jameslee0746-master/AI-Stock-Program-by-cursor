@@ -30,7 +30,7 @@ import threading
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -693,6 +693,10 @@ def _fetch_dart_disclosures(code: str, days: int = 7) -> List[NewsItem]:
 
 _cache: Dict[str, Tuple[float, float]] = {}
 _cache_lock = threading.Lock()
+_news_inflight: Set[str] = set()
+_news_inflight_lock = threading.Lock()
+# 메인스레드 호출이 네트워크에 막히지 않도록 백그라운드 동시 조회 상한
+_news_fetch_sem = threading.Semaphore(int(os.environ.get("NEWS_BG_FETCH_CONCURRENCY", "2")))
 _gemini_score_cache: Dict[str, Tuple[float, float]] = {}
 _gemini_lock = threading.Lock()
 _gemini_status_logged = False
@@ -1160,18 +1164,9 @@ def _gemini_score_for_stock(name: str, code: str, trusted: List[NewsItem]) -> Op
         return None
 
 
-def get_news_sentiment(code: str, force: bool = False, use_gemini: bool = True) -> float:
-    """
-    종목코드에 대한 감성 점수를 반환 (-1.0 ~ +1.0).
-    신뢰 매체 본문 + (키 있으면) Gemini 문맥 판정. 캐시 TTL 이내면 재사용.
-    """
+def _compute_news_sentiment(code: str, use_gemini: bool = True) -> float:
+    """네트워크 I/O 포함 실제 감성 계산. 백그라운드/prefetch 전용."""
     now = time.time()
-    with _cache_lock:
-        if not force and code in _cache:
-            score, fetched_at = _cache[code]
-            if now - fetched_at < NEWS_CACHE_TTL_SEC:
-                return score
-
     name = _stock_name(code)
 
     naver = _fetch_naver_news_json(code)
@@ -1229,6 +1224,55 @@ def get_news_sentiment(code: str, force: bool = False, use_gemini: bool = True) 
     return score
 
 
+def _schedule_news_fetch(code: str, use_gemini: bool) -> None:
+    """캐시 miss/만료 시 백그라운드에서만 네트워크 조회 (메인스레드 블로킹 방지)."""
+    with _news_inflight_lock:
+        if code in _news_inflight:
+            return
+        _news_inflight.add(code)
+
+    def _job() -> None:
+        try:
+            with _news_fetch_sem:
+                _compute_news_sentiment(code, use_gemini=use_gemini)
+        except Exception as e:
+            logger.debug("[NEWS] 백그라운드 조회 실패 %s: %s", code, e)
+        finally:
+            with _news_inflight_lock:
+                _news_inflight.discard(code)
+
+    threading.Thread(target=_job, daemon=True, name=f"news-{code}").start()
+
+
+def get_news_sentiment(
+    code: str,
+    force: bool = False,
+    use_gemini: bool = True,
+    *,
+    blocking: bool = False,
+) -> float:
+    """
+    종목코드에 대한 감성 점수를 반환 (-1.0 ~ +1.0).
+    기본(blocking=False): 캐시만 즉시 반환. miss/만료면 백그라운드 갱신 후
+    만료 캐시(있으면) 또는 0.0을 반환 — on_tick/매수판정에서 HTTP로 멈추지 않음.
+    blocking=True 또는 force=True: 동기 조회(prefetch 스레드용).
+    """
+    now = time.time()
+    stale: Optional[float] = None
+    with _cache_lock:
+        if code in _cache:
+            score, fetched_at = _cache[code]
+            if not force and now - fetched_at < NEWS_CACHE_TTL_SEC:
+                return score
+            stale = float(score)
+
+    if force or blocking:
+        return _compute_news_sentiment(code, use_gemini=use_gemini)
+
+    _schedule_news_fetch(code, use_gemini=use_gemini)
+    return 0.0 if stale is None else stale
+
+
 def prefetch_news_batch(codes: List[str]) -> Dict[str, float]:
     """
     여러 종목 뉴스를 순차적으로 미리 가져옴.
@@ -1241,7 +1285,7 @@ def prefetch_news_batch(codes: List[str]) -> Dict[str, float]:
     cap = max(0, NEWS_GEMINI_MAX_CODES_PER_CYCLE)
     for i, code in enumerate(codes):
         try:
-            results[code] = get_news_sentiment(code, use_gemini=i < cap)
+            results[code] = get_news_sentiment(code, use_gemini=i < cap, blocking=True)
             time.sleep(gap)
         except Exception as e:
             logger.debug("[NEWS] prefetch 실패 %s: %s", code, e)
