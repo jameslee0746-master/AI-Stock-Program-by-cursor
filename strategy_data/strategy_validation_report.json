@@ -1,21 +1,21 @@
 {
-  "generated_at": 1792735305.5069094,
+  "generated_at": 1793163651.0205185,
   "window_size": 1,
-  "active_strategy": "trend",
+  "active_strategy": "ai",
   "ai_reason": "random_forest",
-  "avg_active_score": 1.2391149920218085,
-  "avg_best_score": 1.2391149920218085,
+  "avg_active_score": -4.004831497878942,
+  "avg_best_score": -4.004831497878942,
   "avg_score_gap_to_best": 0.0,
   "avg_data_coverage_ratio": 0.05,
-  "training_rows": 57,
+  "training_rows": 60,
   "min_training_samples": 10,
   "market": {
     "label": "bear",
     "label_ko": "하락",
-    "ret_20d_pct": -22.48433303491495,
-    "dist_ma20_pct": -13.826049742727186,
-    "ma20_slope_pctp": -1.2343615993866281,
-    "vol_20d_pctp": 2.8457626931417943,
+    "ret_20d_pct": -12.926940639269402,
+    "dist_ma20_pct": -1.9966593858409376,
+    "ma20_slope_pctp": -0.7222288835428248,
+    "vol_20d_pctp": 3.450863010524064,
     "source": "kiwoom:index:069500"
   }
 }

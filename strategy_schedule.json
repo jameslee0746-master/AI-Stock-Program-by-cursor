@@ -3,7 +3,7 @@
   "current": {
     "strategy_id": "steady_state",
     "strategy_name": "안정 기조 유지",
-    "applied_date": "2026-10-23",
+    "applied_date": "2026-10-29",
     "revert_on_loss": false,
     "prev_values": {},
     "changes": {},
@@ -18,135 +18,6 @@
     }
   },
   "history": [
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-07-07",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 0,
-        "no_price_block": 1327,
-        "daily_loss_block": 20301,
-        "giveup_count": 0,
-        "timeout_count": 1,
-        "n_buy": 2
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-07-08",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 3338,
-        "no_price_block": 1282,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 2,
-        "n_buy": 4
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "win_rate_tighten",
-      "strategy_name": "승률 기준 강화",
-      "applied_date": "2026-07-09",
-      "revert_on_loss": false,
-      "prev_values": {
-        "DAILY_WIN_RATE_BLOCK_PCT": 0.3
-      },
-      "changes": {
-        "DAILY_WIN_RATE_BLOCK_PCT": {
-          "from": 0.3,
-          "to": 0.35
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 12024,
-        "no_price_block": 1193,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 2,
-        "n_buy": 55
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "win_rate_tighten",
-      "strategy_name": "승률 기준 강화",
-      "applied_date": "2026-07-09",
-      "revert_on_loss": false,
-      "prev_values": {
-        "DAILY_WIN_RATE_BLOCK_PCT": 0.35
-      },
-      "changes": {
-        "DAILY_WIN_RATE_BLOCK_PCT": {
-          "from": 0.35,
-          "to": 0.4
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 12024,
-        "no_price_block": 1193,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 2,
-        "n_buy": 55
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "rsi_range_widen",
-      "strategy_name": "RSI 범위 확대",
-      "applied_date": "2026-07-10",
-      "revert_on_loss": true,
-      "prev_values": {
-        "MA20_ENTRY_GAP_PCT": -0.009
-      },
-      "changes": {
-        "MA20_ENTRY_GAP_PCT": {
-          "from": -0.009,
-          "to": -0.012
-        }
-      },
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 7517,
-        "no_price_block": 1272,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 0,
-        "n_buy": 1
-      },
-      "result": "kept"
-    },
-    {
-      "strategy_id": "steady_state",
-      "strategy_name": "안정 기조 유지",
-      "applied_date": "2026-07-13",
-      "revert_on_loss": false,
-      "prev_values": {},
-      "changes": {},
-      "context": {
-        "win_rate_block": 0,
-        "strategy_block": 4523,
-        "no_price_block": 1186,
-        "daily_loss_block": 0,
-        "giveup_count": 0,
-        "timeout_count": 6,
-        "n_buy": 3
-      },
-      "result": "kept"
-    },
     {
       "strategy_id": "steady_state",
       "strategy_name": "안정 기조 유지",
@@ -2160,6 +2031,114 @@
       "context": {
         "win_rate_block": 0,
         "strategy_block": 442,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-23",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-24",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-25",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-26",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-27",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 0,
+        "no_price_block": 0,
+        "daily_loss_block": 0,
+        "giveup_count": 0,
+        "timeout_count": 0,
+        "n_buy": 0
+      },
+      "result": "kept"
+    },
+    {
+      "strategy_id": "steady_state",
+      "strategy_name": "안정 기조 유지",
+      "applied_date": "2026-10-28",
+      "revert_on_loss": false,
+      "prev_values": {},
+      "changes": {},
+      "context": {
+        "win_rate_block": 0,
+        "strategy_block": 16827,
         "no_price_block": 0,
         "daily_loss_block": 0,
         "giveup_count": 0,

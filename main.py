@@ -633,8 +633,8 @@ ATR_ORDER_CAP_MIN_FACTOR = float(os.environ.get("ATR_ORDER_CAP_MIN_FACTOR", "0.2
 MIN_SEC_BETWEEN_ANY_BUYS = float(os.environ.get("MIN_SEC_BETWEEN_ANY_BUYS", "0"))
 MAX_NEW_BUYS_PER_HOUR = int(os.environ.get("MAX_NEW_BUYS_PER_HOUR", "0"))
 SCAN_CACHE_TTL_SEC = 1800
-# 기본 사용 계좌. 환경변수 KIWOOM_ACCOUNT_NO가 있으면 그 값이 우선합니다.
-DEFAULT_KIWOOM_ACCOUNT_NO = "81314462"
+# 기본 사용 계좌(상시모의 국내주식). 목록에 있으면 환경변수보다 이 값을 우선합니다.
+DEFAULT_KIWOOM_ACCOUNT_NO = "81375140"
 DEFAULT_OVERSEAS_ACCOUNT_NO = "6110-4621"
 US_STOCK_REGULAR_ONLY = True
 OVERSEAS_AUTO_UPGRADE = int(os.environ.get("OVERSEAS_AUTO_UPGRADE", "0"))
@@ -2037,7 +2037,7 @@ class KiwoomOpenAPI(QAxWidget):
             )
 
         env_account_no = os.environ.get("KIWOOM_ACCOUNT_NO", "").strip()
-        # 국내 자동매매: 기본 계좌(8125…)를 환경변수보다 우선
+        # 국내 자동매매: DEFAULT_KIWOOM_ACCOUNT_NO를 환경변수보다 우선
         preferred: List[str] = []
         if preferred_default:
             preferred.append(preferred_default)
@@ -3074,6 +3074,13 @@ class TradingEngine:
         self._ai_train_attempted_date: Optional[datetime.date] = None
         self._ai_train_scheduled: bool = False
         self._ai_training_active: bool = False
+        self._regime_update_scheduled: bool = False
+        self._regime_update_active: bool = False
+        self._strat_ohlcv_warm_scheduled: bool = False
+        self._strat_ohlcv_warm_active: bool = False
+        self._holdings_sync_scheduled: bool = False
+        self._holdings_sync_active: bool = False
+        self._holdings_sync_kind: str = "periodic"
         # 3단계: 학습 품질 메트릭(GUI·매수규모 연동)
         self.ai_val_auc: Optional[float] = None
         self.ai_val_brier: Optional[float] = None
@@ -3331,8 +3338,17 @@ class TradingEngine:
             return None
         return row
 
+    def _kiwoom_tr_busy(self) -> bool:
+        """키움 TR(일봉·잔고)이 메인스레드에서 도는 중이면 True (on_tick 하트비트만)."""
+        return bool(
+            getattr(self, "_ai_training_active", False)
+            or getattr(self, "_regime_update_active", False)
+            or getattr(self, "_strat_ohlcv_warm_active", False)
+            or getattr(self, "_holdings_sync_active", False)
+        )
+
     def _warm_strategy_ohlcv_cache(self, force: bool = False) -> None:
-        """평가 전에 지수·표본 종목 일봉을 메인 스레드에서 캐시."""
+        """평가 전 일봉 캐시 — on_tick에서는 예약만, 실제 TR은 QTimer에서."""
         now = datetime.datetime.now()
         if (
             not force
@@ -3340,30 +3356,57 @@ class TradingEngine:
             and (now - self._last_strat_ohlcv_warm_at).total_seconds() < 1800.0
         ):
             return
-        codes: List[str] = []
-        for c in list(KIWOOM_REGIME_INDEX_CODES) + list(self.stock_codes or [])[:8]:
-            c = str(c).strip()
-            if c and c not in codes:
-                codes.append(c)
-        warmed = 0
-        for code in codes:
-            row = self._fetch_kiwoom_ohlcv_tuple(code)
-            if row is None:
-                continue
-            with self._strat_ohlcv_cache_lock:
-                self._strat_ohlcv_cache[code] = row
-                self._strat_ohlcv_cache_at[code] = now
-            warmed += 1
-        self._last_strat_ohlcv_warm_at = now
-        if warmed:
-            self._emit_log(f"[STRAT] 키움 OHLCV 캐시 {warmed}/{len(codes)}종목")
+        if getattr(self, "_strat_ohlcv_warm_scheduled", False) or getattr(
+            self, "_strat_ohlcv_warm_active", False
+        ):
+            return
+        if self._kiwoom_tr_busy():
+            return
+        self._strat_ohlcv_warm_scheduled = True
+        self._strat_ohlcv_warm_force = bool(force)
+        QTimer.singleShot(80, self._run_strat_ohlcv_warm_deferred)
+
+    def _run_strat_ohlcv_warm_deferred(self) -> None:
+        self._strat_ohlcv_warm_scheduled = False
+        if getattr(self, "_strat_ohlcv_warm_active", False) or getattr(
+            self, "_ai_training_active", False
+        ):
+            return
+        force = bool(getattr(self, "_strat_ohlcv_warm_force", False))
+        now = datetime.datetime.now()
+        if (
+            not force
+            and self._last_strat_ohlcv_warm_at is not None
+            and (now - self._last_strat_ohlcv_warm_at).total_seconds() < 1800.0
+        ):
+            return
+        self._strat_ohlcv_warm_active = True
+        try:
+            codes: List[str] = []
+            for c in list(KIWOOM_REGIME_INDEX_CODES) + list(self.stock_codes or [])[:8]:
+                c = str(c).strip()
+                if c and c not in codes:
+                    codes.append(c)
+            warmed = 0
+            for code in codes:
+                row = self._fetch_kiwoom_ohlcv_tuple(code)
+                if row is None:
+                    continue
+                with self._strat_ohlcv_cache_lock:
+                    self._strat_ohlcv_cache[code] = row
+                    self._strat_ohlcv_cache_at[code] = now
+                warmed += 1
+            self._last_strat_ohlcv_warm_at = now
+            if warmed:
+                self._emit_log(f"[STRAT] 키움 OHLCV 캐시 {warmed}/{len(codes)}종목")
+        finally:
+            self._strat_ohlcv_warm_active = False
 
     def _maybe_update_market_regime_from_kiwoom(self) -> None:
-        """키움 일봉으로 시장 국면을 자동 산출·갱신한다.
+        """키움 일봉 국면 갱신 — on_tick에서는 예약만 (TR로 매매루프 STALL 방지).
 
         우선순위: 지수 ETF(KODEX200 등) → 관심종목 합성.
-        장중 REGIME_REFRESH_INTERVAL_SEC 마다 재평가해 반등일을 하루 종일 bear로
-        고정하지 않는다. yfinance 성공 시 StrategyManager가 덮어쓸 수 있다.
+        장중 REGIME_REFRESH_INTERVAL_SEC 마다 재평가. yfinance 성공 시 StrategyManager가 덮어쓸 수 있다.
         """
         sm = self.strategy_manager
         if sm is None:
@@ -3384,66 +3427,98 @@ class TradingEngine:
             and (now - self._last_regime_fallback_at).total_seconds() < 120.0
         ):
             return
-        self._last_regime_fallback_at = now
-        today = datetime.date.today().strftime("%Y%m%d")
-
-        def _closes_for(code: str) -> List[float]:
-            try:
-                ohlcv = self.kiwoom.request_daily_ohlcv(
-                    code, end_date_yyyymmdd=today, count=60
-                )
-                closes = [float(x) for x in (ohlcv.get("closes", []) or [])]
-                return closes if len(closes) >= 25 else []
-            except Exception:
-                return []
-
-        regime = None
-        # 1) 지수 ETF 우선
-        for idx_code in KIWOOM_REGIME_INDEX_CODES:
-            closes = _closes_for(idx_code)
-            if not closes:
-                continue
-            regime = replace(
-                analyze_market_regime(closes),
-                source=f"kiwoom:index:{idx_code}",
-            )
-            break
-
-        # 2) 관심종목 합성 (하드블록 비적용 소스)
-        if regime is None:
-            closes_list: List[List[float]] = []
-            for code in list(self.stock_codes or [])[:8]:
-                closes = _closes_for(code)
-                if closes:
-                    closes_list.append(closes)
-                if len(closes_list) >= 4:
-                    break
-            if len(closes_list) >= 2:
-                ln = min(len(c) for c in closes_list)
-                comp = [
-                    sum(c[-ln:][i] for c in closes_list) / len(closes_list)
-                    for i in range(ln)
-                ]
-                regime = replace(
-                    analyze_market_regime(comp),
-                    source=f"kiwoom:composite:{len(closes_list)}",
-                )
-
-        if regime is None:
+        if getattr(self, "_regime_update_scheduled", False) or getattr(
+            self, "_regime_update_active", False
+        ):
             return
+        if self._kiwoom_tr_busy():
+            return
+        self._last_regime_fallback_at = now
+        self._regime_update_scheduled = True
+        QTimer.singleShot(120, self._run_regime_update_deferred)
 
-        raw_label = str(regime.label)
-        regime, prev_label, adopted = sm.set_market_regime(regime)
-        mom = regime_momentum(regime)
-        changed = prev_label != str(regime.label)
-        held = raw_label != str(regime.label)
-        self._emit_log(
-            f"[STRAT] 시장 국면(키움) {regime.label_ko} mom={mom:+.2f} "
-            f"R20={regime.ret_20d_pct:+.1f}% MA이격={regime.dist_ma20_pct:+.1f}% "
-            f"src={regime.source}"
-            + (f" (변경:{prev_label or '-'}→{regime.label})" if changed and prev_label else "")
-            + (f" (원판정 {raw_label}→히스테리시스 유지)" if held and adopted else "")
-        )
+    def _run_regime_update_deferred(self) -> None:
+        """QTimer: 캐시 우선·필요 시 키움 TR로 국면 산출 (on_tick 밖)."""
+        self._regime_update_scheduled = False
+        if getattr(self, "_regime_update_active", False) or getattr(
+            self, "_ai_training_active", False
+        ):
+            return
+        sm = self.strategy_manager
+        if sm is None:
+            return
+        self._regime_update_active = True
+        try:
+            today = datetime.date.today().strftime("%Y%m%d")
+
+            def _closes_for(code: str) -> List[float]:
+                cached = self._get_cached_strat_ohlcv(code)
+                if cached and len(cached[0]) >= 25:
+                    return list(cached[0])
+                try:
+                    ohlcv = self.kiwoom.request_daily_ohlcv(
+                        code, end_date_yyyymmdd=today, count=60
+                    )
+                    closes = [float(x) for x in (ohlcv.get("closes", []) or [])]
+                    return closes if len(closes) >= 25 else []
+                except Exception:
+                    return []
+
+            regime = None
+            for idx_code in KIWOOM_REGIME_INDEX_CODES:
+                closes = _closes_for(idx_code)
+                if not closes:
+                    continue
+                regime = replace(
+                    analyze_market_regime(closes),
+                    source=f"kiwoom:index:{idx_code}",
+                )
+                break
+
+            if regime is None:
+                closes_list: List[List[float]] = []
+                for code in list(self.stock_codes or [])[:8]:
+                    closes = _closes_for(code)
+                    if closes:
+                        closes_list.append(closes)
+                    if len(closes_list) >= 4:
+                        break
+                if len(closes_list) >= 2:
+                    ln = min(len(c) for c in closes_list)
+                    comp = [
+                        sum(c[-ln:][i] for c in closes_list) / len(closes_list)
+                        for i in range(ln)
+                    ]
+                    regime = replace(
+                        analyze_market_regime(comp),
+                        source=f"kiwoom:composite:{len(closes_list)}",
+                    )
+
+            if regime is None:
+                return
+
+            raw_label = str(regime.label)
+            regime, prev_label, adopted = sm.set_market_regime(regime)
+            mom = regime_momentum(regime)
+            changed = prev_label != str(regime.label)
+            held = raw_label != str(regime.label)
+            self._emit_log(
+                f"[STRAT] 시장 국면(키움) {regime.label_ko} mom={mom:+.2f} "
+                f"R20={regime.ret_20d_pct:+.1f}% MA이격={regime.dist_ma20_pct:+.1f}% "
+                f"src={regime.source}"
+                + (
+                    f" (변경:{prev_label or '-'}→{regime.label})"
+                    if changed and prev_label
+                    else ""
+                )
+                + (
+                    f" (원판정 {raw_label}→히스테리시스 유지)"
+                    if held and adopted
+                    else ""
+                )
+            )
+        finally:
+            self._regime_update_active = False
 
     def scan_quality_ui_tag(self) -> str:
         if not QUALITY_DIP_ENABLED or not self._scan_quality_intent_active:
@@ -3790,6 +3865,8 @@ class TradingEngine:
             f"  UI_TABLE_LIGHT=ON (진입대기 등 테이블 {UI_TABLE_REFRESH_INTERVAL_SEC:.0f}s·"
             f"변경셀만 갱신·표시상한 {UI_WAITING_DISPLAY_LIMIT})",
             "  AI_TRAIN_DEFERRED=ON (재학습은 on_tick 밖 QTimer·정규장 제외, 학습 중 하트비트만)",
+            "  REGIME_UPDATE_DEFERRED=ON (국면·전략OHLCV 캐시도 on_tick 밖 QTimer·TR중 하트비트)",
+            "  HOLDINGS_SYNC_DEFERRED=ON (잔고/reconcile TR도 on_tick 밖 QTimer·TR중 하트비트)",
             f"  QUALITY_AVG_DOWN_ENABLED={bool(QUALITY_AVG_DOWN_ENABLED)} "
             f"max={int(QUALITY_AVG_DOWN_MAX)} "
             f"step={float(QUALITY_AVG_DOWN_STEP_PCT):.0%} "
@@ -7135,11 +7212,10 @@ class TradingEngine:
     def _reconcile_orders_and_portfolio(self) -> None:
         """
         체결확인 -> 포트폴리오 업데이트.
-        Chejan 이벤트가 없더라도 잔고 동기화로 체결 여부를 추정한다.
+        잔고 TR은 on_tick 밖 QTimer로 돌리고, 완료 후 pending 체결을 추정한다.
         """
         if not self.pending_orders:
             return
-        # TR 과호출 방지: 최소 10초 간격으로만 sync_portfolio 호출
         RECONCILE_SYNC_INTERVAL_SEC = 10.0
         now_r = datetime.datetime.now()
         if (
@@ -7147,12 +7223,12 @@ class TradingEngine:
             and (now_r - self._last_reconcile_sync_at).total_seconds() < RECONCILE_SYNC_INTERVAL_SEC
         ):
             return
-        self._last_reconcile_sync_at = now_r
-        try:
-            self.sync_portfolio(password=self._account_password if hasattr(self, "_account_password") else "")
-        except Exception:
+        if not self._schedule_holdings_sync(kind="reconcile", delay_ms=50):
             return
+        self._last_reconcile_sync_at = now_r
 
+    def _reconcile_pending_orders_after_sync(self) -> None:
+        """잔고 TR 완료 후 pending 주문 체결 추정 (deferred 콜백)."""
         now = datetime.datetime.now()
         to_clear: List[str] = []
         for code, meta in list(self.pending_orders.items()):
@@ -8694,22 +8770,62 @@ class TradingEngine:
         self._theme_prefetch_thread.start()
 
     def _maybe_periodic_holdings_sync(self) -> None:
-        """60초마다 또는 체결 직후 플래그 세팅 시 잔고 TR을 자동 갱신한다."""
+        """60초마다 또는 체결 직후 플래그 시 잔고 TR 예약 (on_tick에서는 TR 직접 호출 안 함)."""
         HOLDINGS_SYNC_INTERVAL_SEC = 60.0
         now = datetime.datetime.now()
         due = (
             self._last_periodic_holdings_sync_at is None
-            or (now - self._last_periodic_holdings_sync_at).total_seconds() >= HOLDINGS_SYNC_INTERVAL_SEC
+            or (now - self._last_periodic_holdings_sync_at).total_seconds()
+            >= HOLDINGS_SYNC_INTERVAL_SEC
         )
-        if self._need_portfolio_sync or due:
+        if not (self._need_portfolio_sync or due):
+            return
+        self._schedule_holdings_sync(kind="periodic", delay_ms=50)
+
+    def _schedule_holdings_sync(self, *, kind: str, delay_ms: int = 50) -> bool:
+        """잔고 TR을 QTimer로 예약. 성공 시 True."""
+        if getattr(self, "_holdings_sync_scheduled", False) or getattr(
+            self, "_holdings_sync_active", False
+        ):
+            return False
+        if self._kiwoom_tr_busy():
+            return False
+        self._holdings_sync_kind = str(kind or "periodic")
+        self._holdings_sync_scheduled = True
+        QTimer.singleShot(int(delay_ms), self._run_holdings_sync_deferred)
+        return True
+
+    def _run_holdings_sync_deferred(self) -> None:
+        """QTimer: opw00018 잔고 TR — on_tick 밖에서 수행해 STALL 방지."""
+        self._holdings_sync_scheduled = False
+        if getattr(self, "_holdings_sync_active", False):
+            return
+        if (
+            getattr(self, "_ai_training_active", False)
+            or getattr(self, "_regime_update_active", False)
+            or getattr(self, "_strat_ohlcv_warm_active", False)
+        ):
+            self._holdings_sync_scheduled = True
+            QTimer.singleShot(400, self._run_holdings_sync_deferred)
+            return
+        kind = str(getattr(self, "_holdings_sync_kind", "periodic") or "periodic")
+        self._holdings_sync_active = True
+        try:
+            sync_ok = True
             try:
                 self.sync_portfolio(
                     password=self._account_password if hasattr(self, "_account_password") else ""
                 )
             except Exception:
-                pass
-            self._need_portfolio_sync = False
-            self._last_periodic_holdings_sync_at = now
+                sync_ok = False
+            now = datetime.datetime.now()
+            if kind == "periodic":
+                self._need_portfolio_sync = False
+                self._last_periodic_holdings_sync_at = now
+            elif kind == "reconcile" and sync_ok:
+                self._reconcile_pending_orders_after_sync()
+        finally:
+            self._holdings_sync_active = False
 
     def _maybe_train_ai_model(self) -> None:
         """
@@ -8768,8 +8884,8 @@ class TradingEngine:
 
     def on_tick(self):
         self._last_tick_at = time.monotonic()
-        # AI 재학습(키움 TR)이 메인스레드에서 돌 때: 하트비트만 남겨 STALL 오탐·중첩 학습 방지
-        if getattr(self, "_ai_training_active", False):
+        # 키움 일봉 TR(재학습·국면·OHLCV캐시)이 메인스레드에서 돌 때: 하트비트만
+        if self._kiwoom_tr_busy():
             return
         today = datetime.date.today()
         self._maybe_reset_daily_state(today)
