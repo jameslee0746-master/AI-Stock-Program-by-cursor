@@ -1,0 +1,38 @@
+{
+  "created_at": "2026-11-04 23:25:07",
+  "reason": "사용자 긴급정지",
+  "account": "8137514011",
+  "gate": {
+    "live_orders_enabled": false,
+    "block_buys": false,
+    "block_all": false,
+    "emergency": true,
+    "emergency_at": "2026-11-04 23:25:07",
+    "connected": true,
+    "resync_required": false,
+    "resync_reason": "",
+    "stats": {
+      "ALLOWED": 2,
+      "SERVER_UNKNOWN": 1,
+      "BLOCK_BUY": 1,
+      "BLOCK_ALL": 2
+    }
+  },
+  "positions": {},
+  "pending_orders_in_app": {},
+  "open_orders_from_broker": [],
+  "cancel_results": [],
+  "extra": {
+    "realized_pnl_krw": 0.0,
+    "opw_estimated_deposit_krw": null,
+    "opw00018_summary": {
+      "추정예탁자산": 10000000,
+      "총평가금액": 0,
+      "총매입금액": 0,
+      "총평가손익금액": 0
+    },
+    "current_price": {},
+    "engine_timer_active": false
+  },
+  "notice": "긴급정지: 신규 매수 차단 + 미체결 취소 요청 + 계좌 상태 기록을 수행했습니다. 손절·익절 로직의 켜짐/꺼짐 상태는 이 기능이 바꾸지 않습니다. 앱 종료·연결 단절·정지 상태에서는 자동 손절이 보장되지 않습니다."
+}

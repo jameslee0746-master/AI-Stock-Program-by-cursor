@@ -144,6 +144,7 @@ from strategy_manager import (
 )
 from dataclasses import replace
 import ai_objective_shared as aos
+import order_safety  # 0단계 안전장치: 주문 중앙 게이트·긴급정지·중복실행 방지
 
 
 # =========================
@@ -1862,6 +1863,11 @@ class KiwoomOpenAPI(QAxWidget):
         self.last_opw00018_summary: Dict[str, int] = {}
         # GetServerGubun == "1" → 모의투자. 로그인 후 설정.
         self.is_mock_server = False
+        # 0단계 안전장치: 로그인 시 확인한 서버 구분 원문("1"=모의), 주문 중앙 게이트
+        self.server_gubun: str = ""
+        self.safety_gate = order_safety.get_gate()
+        self.last_holdings_ok_at: float = 0.0  # opw00018 응답 성공 시각(monotonic)
+        self.last_order_msg: str = ""  # 주문 TR(OnReceiveMsg) 최근 서버 메시지
 
         # 이벤트 연결
         self.OnEventConnect.connect(self._on_event_connect)
@@ -1931,6 +1937,13 @@ class KiwoomOpenAPI(QAxWidget):
     def _on_receive_msg(self, screen_no, rqname, trcode, msg):
         # 필요 시 로깅 강화 가능
         self._last_error = f"OnReceiveMsg: {msg}"
+        # SendOrder 반환값 0 이어도 서버가 거부할 수 있다 → 주문 TR 메시지는 별도로 남긴다.
+        try:
+            if str(rqname) in ("주문", "취소주문"):
+                self.last_order_msg = f"[{rqname}] {msg}"
+                print(f"[ORDER-MSG] rq={rqname} trcode={trcode} msg={msg}", flush=True)
+        except Exception:
+            pass
 
     def _list_login_accounts(self) -> List[str]:
         """GetLoginInfo에서 계좌목록을 모은다(ACCNO/ACCLIST 등)."""
@@ -2029,6 +2042,7 @@ class KiwoomOpenAPI(QAxWidget):
         # 키움: GetServerGubun == "1" → 모의투자, 그 외 실서버
         is_mock = server_gubun == "1"
         self.is_mock_server = is_mock
+        self.server_gubun = server_gubun
         if is_mock:
             print(
                 "[Kiwoom] WARN 모의투자 서버 접속(GetServerGubun=1). "
@@ -2366,6 +2380,7 @@ class KiwoomOpenAPI(QAxWidget):
             return None
         if not isinstance(data, dict):
             return None
+        self.last_holdings_ok_at = time.monotonic()
         try:
             print(
                 f"[HOLDINGS-TR] account={account} rows={len(data)} pw={'set' if str(password).strip() else 'empty'}",
@@ -2441,22 +2456,93 @@ class KiwoomOpenAPI(QAxWidget):
         except Exception:
             return 0
 
-    def send_order_market(self, account: str, code: str, qty: int, order_type: int) -> None:
+    def send_order_market(
+        self, account: str, code: str, qty: int, order_type: int
+    ) -> "order_safety.SendResult":
         """
-        SendOrder로 시장가 주문 전송.
-        - 주문명: "주문"
-        - 화면번호: "0101"
-        - 매매구분: BUY_SELL_MARKET (2=시장가)
-        - 가격: 0 (시장가)
+        시장가 주문 전송 — 중앙 게이트(order_safety.guarded_send_order) 경유.
+        - 주문명: "주문", 화면번호: "0101", 호가구분: "03"(시장가), 가격: 0
+        - 반환: SendResult. accepted=True 는 '접수 요청 성공(ret=0)'일 뿐 체결이 아니다.
+          게이트가 거부하면 SendOrder 는 호출되지 않는다.
         """
-        if qty <= 0:
-            return
-
-        # SendOrder(rqname, screenNo, accNo, orderType, code, qty, price, hogaGb, orgOrderNo)
-        self.dynamicCall(
-            "SendOrder(QString, QString, QString, int, QString, int, int, QString, QString)",
-            ["주문", SCREEN_NO, account, order_type, code, qty, 0, HOGA_MARKET, ""],
+        return order_safety.guarded_send_order(
+            self,
+            rqname="주문",
+            screen_no=SCREEN_NO,
+            account=account,
+            order_type=int(order_type),
+            code=code,
+            qty=int(qty),
+            price=0,
+            hoga=HOGA_MARKET,
+            org_order_no="",
+            gate=self.safety_gate,
         )
+
+    def cancel_order(self, account: str, order: "order_safety.OpenOrder") -> "order_safety.SendResult":
+        """미체결 주문 취소 *요청*. 같은 중앙 게이트를 경유한다. 요청 성공 ≠ 취소 완료."""
+        return order_safety.guarded_send_order(
+            self,
+            rqname="취소주문",
+            screen_no=SCREEN_NO,
+            account=account,
+            order_type=order.cancel_order_type(),
+            code=order.code,
+            qty=int(order.open_qty),
+            price=0,
+            hoga="00",
+            org_order_no=order.order_no,
+            gate=self.safety_gate,
+        )
+
+    def request_open_orders(
+        self, account: str, timeout_ms: int = 15000
+    ) -> Optional[List["order_safety.OpenOrder"]]:
+        """
+        opt10075(미체결요청)로 증권사 기준 미체결 주문을 조회한다.
+        반환: 미체결 목록(없으면 []). TR 미수신/오류는 None (빈 목록과 구분).
+        2026-11 신규: 모의/실서버 실기 검증 전 — 첫 페이지(최대 약 20건)만 읽는다.
+        """
+        rqname = "REQ_OPEN_ORDERS"
+        self._tr_loops[rqname] = QEventLoop()
+        self._tr_responses.pop(rqname, None)
+        self.dynamicCall("SetInputValue(QString, QString)", "계좌번호", account)
+        self.dynamicCall("SetInputValue(QString, QString)", "전체종목구분", "0")
+        self.dynamicCall("SetInputValue(QString, QString)", "매매구분", "0")
+        self.dynamicCall("SetInputValue(QString, QString)", "종목코드", "")
+        self.dynamicCall("SetInputValue(QString, QString)", "체결구분", "1")  # 1=미체결
+        ret = self.dynamicCall(
+            "CommRqData(QString, QString, int, QString)",
+            rqname,
+            "opt10075",
+            0,
+            SCREEN_NO_ACCOUNT_EVAL,
+        )
+        try:
+            if ret is not None and int(ret) != 0:
+                self._tr_loops.pop(rqname, None)
+                return None
+        except Exception:
+            pass
+        loop = self._tr_loops[rqname]
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec_()
+        timer.stop()
+        self._tr_loops.pop(rqname, None)
+        data = self._tr_responses.get(rqname)
+        if not isinstance(data, dict) or not data.get("ok"):
+            return None
+        orders: List[order_safety.OpenOrder] = []
+        for row in data.get("rows", []):
+            o = order_safety.normalize_open_order(row)
+            if o is not None:
+                orders.append(o)
+        if data.get("more"):
+            print("[OPEN-ORDERS] WARN 다음 페이지 존재 — 첫 페이지만 조회됨", flush=True)
+        return orders
 
     def get_master_code_name(self, code: str) -> str:
         clean = str(code).replace(".KS", "").replace(".KQ", "").strip()
@@ -2754,6 +2840,32 @@ class KiwoomOpenAPI(QAxWidget):
                         summary[fld] = int(vi)
                 self.last_opw00018_summary = summary
                 self._tr_responses[rqname] = holdings
+
+            elif rqname == "REQ_OPEN_ORDERS" and str(trcode).lower() == "opt10075":
+                try:
+                    cnt_o = int(self.dynamicCall("GetRepeatCnt(QString, QString)", trcode, rqname))
+                    rows_o: List[Dict[str, str]] = []
+                    for i in range(cnt_o):
+                        row_o: Dict[str, str] = {}
+                        for fld in (
+                            "주문번호", "종목코드", "종목명", "주문상태", "주문수량",
+                            "주문가격", "미체결수량", "주문구분", "시간",
+                        ):
+                            row_o[fld] = str(
+                                self.dynamicCall(
+                                    "GetCommData(QString, QString, int, QString)",
+                                    trcode, rqname, i, fld,
+                                )
+                                or ""
+                            ).strip()
+                        rows_o.append(row_o)
+                    self._tr_responses[rqname] = {
+                        "ok": True,
+                        "rows": rows_o,
+                        "more": str(prev_next).strip() == "2",
+                    }
+                except Exception as e:
+                    print(f"[OPEN-ORDERS] 파싱 오류: {e}", flush=True)
 
             elif rqname == "REQ_OPW00004" and str(trcode).lower() == "opw00004":
                 out: Dict[str, int] = {}
@@ -3221,6 +3333,10 @@ class TradingEngine:
         self._next_ma_refresh_at = datetime.datetime.min
         self._last_global_buy_sent_at: Optional[datetime.datetime] = None
         self._global_buy_timestamps: deque = deque(maxlen=4000)
+        # 0단계 안전장치: 재연결 후 잔고·미체결 재확인 상태
+        self._safety_resync_scheduled: bool = False
+        self._safety_resync_active: bool = False
+        self._safety_resync_last_at: float = -1e9
 
     def set_scan_quality_context(
         self, quality_intent: bool, allowlist: Optional[Set[str]] = None
@@ -6778,13 +6894,204 @@ class TradingEngine:
             add_budget = min(add_budget, max_single)
         return max(0, int(add_budget // cur))
 
+    # ------------------------------------------------------------------
+    # 0단계 안전장치 연동 (로직 본체는 order_safety.py)
+    # ------------------------------------------------------------------
+    def _safety_gate(self) -> "order_safety.OrderSafetyGate":
+        return getattr(self.kiwoom, "safety_gate", None) or order_safety.get_gate()
+
+    def _safety_log_rejection(
+        self, side: str, code: str, qty: int, price: float, res: object
+    ) -> None:
+        """게이트 거부/SendOrder 오류를 주문 이벤트 CSV와 로그에 남긴다(거부는 60초 스로틀)."""
+        status = str(getattr(res, "status", "") or "")
+        reason = str(getattr(res, "reason", "") or "")
+        detail = str(getattr(res, "detail", "") or "")
+        ret = getattr(res, "ret_code", None)
+        blocked = status in (order_safety.S_BLOCKED, order_safety.S_INVALID)
+        if blocked and not self._safety_gate().should_log_rejection((side, code, reason), 60.0):
+            return
+        self._append_order_event(
+            event="ORDER_BLOCKED" if blocked else "ORDER_SEND_ERROR",
+            code=code,
+            side=side,
+            qty=int(qty or 0),
+            price=float(price or 0.0),
+            note=f"{status}/{reason} ret={ret} {detail}".strip(),
+        )
+        tag = "ORDER-BLOCK" if blocked else "ORDER-ERROR"
+        self._emit_log(f"[{tag}] {code} {side} qty={qty} {status}/{reason} ret={ret} {detail}")
+
+    def _safety_on_tick(self, connected: bool) -> None:
+        """on_tick: 연결 상태를 게이트에 반영하고, 복구됐으면 잔고·미체결 재확인을 예약."""
+        gate = self._safety_gate()
+        gate.observe_connection(bool(connected))
+        if connected and gate.resync_required:
+            self._safety_schedule_resync()
+
+    def _safety_schedule_resync(self) -> bool:
+        now = time.monotonic()
+        if getattr(self, "_safety_resync_scheduled", False) or getattr(
+            self, "_safety_resync_active", False
+        ):
+            return False
+        if now - float(getattr(self, "_safety_resync_last_at", -1e9)) < 10.0:
+            return False
+        if self._kiwoom_tr_busy() or self._holdings_sync_active or self._holdings_sync_scheduled:
+            return False
+        self._safety_resync_scheduled = True
+        self._safety_resync_last_at = now
+        QTimer.singleShot(300, self._run_safety_resync_deferred)
+        return True
+
+    def _run_safety_resync_deferred(self) -> None:
+        """재연결 후: 잔고 TR + 미체결 TR 이 모두 성공해야 주문 허용(게이트 해제)."""
+        self._safety_resync_scheduled = False
+        if getattr(self, "_safety_resync_active", False):
+            return
+        gate = self._safety_gate()
+        if not gate.resync_required:
+            return
+        token = gate.begin_resync()
+        self._safety_resync_active = True
+        holdings_ok = False
+        open_ok = False
+        try:
+            before = float(getattr(self.kiwoom, "last_holdings_ok_at", 0.0) or 0.0)
+            self._holdings_sync_active = True
+            try:
+                self.sync_portfolio(
+                    password=self._account_password if hasattr(self, "_account_password") else ""
+                )
+            finally:
+                self._holdings_sync_active = False
+            holdings_ok = float(getattr(self.kiwoom, "last_holdings_ok_at", 0.0) or 0.0) > before
+            orders = self.kiwoom.request_open_orders(self.account)
+            open_ok = orders is not None
+            if open_ok:
+                self._safety_note_open_orders(orders or [], context="재연결")
+            released = gate.complete_resync(token, holdings_ok=holdings_ok, open_orders_ok=open_ok)
+            self._emit_log(
+                f"[SAFETY] 재연결 재확인 잔고={'OK' if holdings_ok else '실패'} "
+                f"미체결={'OK' if open_ok else '실패'} → 주문 {'허용' if released else '계속 차단'}"
+            )
+        except Exception as e:
+            self._emit_log(f"[SAFETY] 재연결 재확인 예외: {type(e).__name__}: {e} → 주문 계속 차단")
+        finally:
+            self._safety_resync_active = False
+
+    def _safety_note_open_orders(self, orders: List["order_safety.OpenOrder"], context: str) -> None:
+        """증권사 미체결 목록을 기록하고, 앱이 추적하지 않는 주문은 경고만 한다(자동 취소·복구 안 함)."""
+        self._emit_log(f"[SAFETY] 미체결 조회({context}): {len(orders)}건")
+        for o in orders:
+            pend = self.pending_orders.get(o.code)
+            known = bool(pend) and str(pend.get("side", "")).upper() == o.side
+            self._append_order_event(
+                event="OPEN_ORDER_SEEN",
+                code=o.code,
+                side=o.side,
+                qty=int(o.open_qty),
+                price=float(o.price),
+                note=f"{context} order_no={o.order_no} app_tracked={known}",
+            )
+            if not known:
+                self._emit_log(
+                    f"[SAFETY] WARN 앱이 추적하지 않는 미체결 {o.code} {o.side} "
+                    f"미체결={o.open_qty} 주문번호={o.order_no} — 자동 취소/복구하지 않음, 직접 확인"
+                )
+
+    def safety_startup_check(self) -> None:
+        """시작 시 증권사 미체결을 1회 조회해 기록만 한다(실패해도 거래를 막지 않음)."""
+        try:
+            orders = self.kiwoom.request_open_orders(self.account)
+            if orders is None:
+                self._emit_log("[SAFETY] 시작 시 미체결 조회 실패 — 기록 못함 (미완료: 재시작 복구 미구현)")
+            else:
+                self._safety_note_open_orders(orders, context="시작")
+        except Exception as e:
+            self._emit_log(f"[SAFETY] 시작 시 미체결 조회 예외: {type(e).__name__}: {e}")
+
+    def safety_set_block_buys(self, on: bool) -> None:
+        self._safety_gate().set_block_buys(on)
+        self._append_order_event(event="SAFETY_BLOCK_BUYS", code="", note=f"on={bool(on)}")
+        self._emit_log(f"[SAFETY] 신규 매수 차단 {'ON' if on else 'OFF'}")
+
+    def safety_set_block_all(self, on: bool) -> None:
+        self._safety_gate().set_block_all(on)
+        self._append_order_event(event="SAFETY_BLOCK_ALL", code="", note=f"on={bool(on)}")
+        self._emit_log(
+            f"[SAFETY] 신규 주문 전체 차단 {'ON — ' + order_safety.NOTICE_BLOCK_ALL if on else 'OFF'}"
+        )
+
+    def safety_emergency_stop(self, reason: str = "사용자 긴급정지") -> "order_safety.EmergencyReport":
+        extra = {
+            "realized_pnl_krw": float(getattr(self, "realized_pnl_krw", 0.0) or 0.0),
+            "opw_estimated_deposit_krw": getattr(self, "opw_estimated_deposit_krw", None),
+            "opw00018_summary": dict(getattr(self.kiwoom, "last_opw00018_summary", {}) or {}),
+            "current_price": dict(self.current_price),
+            "engine_timer_active": bool(self.timer.isActive()),
+        }
+        rep = order_safety.run_emergency_stop(
+            gate=self._safety_gate(),
+            api=self.kiwoom,
+            account=self.account,
+            positions=dict(self.positions),
+            pending_orders=dict(self.pending_orders),
+            snapshot_dir=os.path.join(os.path.dirname(self.order_event_csv_path), "safety"),
+            reason=reason,
+            log=self._emit_log,
+            record_event=self._append_order_event,
+            extra=extra,
+        )
+        if rep.cancel_results:
+            QTimer.singleShot(4000, self._safety_verify_cancels)
+        return rep
+
+    def _safety_verify_cancels(self) -> None:
+        """긴급정지 취소 요청 후 미체결이 남았는지 재조회(취소 요청 ≠ 취소 완료)."""
+        try:
+            orders = self.kiwoom.request_open_orders(self.account)
+            if orders is None:
+                self._emit_log("[SAFETY] 취소 후 재조회 실패 — 직접 확인 필요")
+            else:
+                self._emit_log(f"[SAFETY] 취소 요청 후 잔존 미체결 {len(orders)}건")
+                for o in orders:
+                    self._append_order_event(
+                        event="OPEN_ORDER_AFTER_CANCEL",
+                        code=o.code,
+                        side=o.side,
+                        qty=int(o.open_qty),
+                        price=float(o.price),
+                        note=f"order_no={o.order_no}",
+                    )
+        except Exception as e:
+            self._emit_log(f"[SAFETY] 취소 후 재조회 예외: {type(e).__name__}: {e}")
+
+    def safety_clear_emergency(self) -> None:
+        self._safety_gate().clear_emergency()
+        self._append_order_event(event="EMERGENCY_CLEARED", code="")
+        self._emit_log("[SAFETY] 긴급정지 해제 (신규 매수 차단은 별도 스위치 상태에 따름)")
+
+    def safety_status_text(self) -> str:
+        st = self._safety_gate().status()
+        mock = order_safety.probe_server_is_mock(self.kiwoom)
+        if mock is None:
+            server = "서버 미확인(주문 거부)"
+        elif mock:
+            server = "모의서버"
+        else:
+            server = "실서버·" + ("실주문 허용" if st["live_orders_enabled"] else "실주문 차단(LIVE_ORDERS_ENABLED≠1)")
+        flags = order_safety.status_flags(st)
+        return f"안전: {server} | " + (", ".join(flags) if flags else "차단 없음")
+
     def buy_market(
         self,
         code: str,
         qty_override: Optional[int] = None,
         *,
         avg_down: bool = False,
-    ) -> None:
+    ) -> Optional[bool]:
+        """매수 주문. 게이트 거부/SendOrder 오류로 주문이 나가지 못했을 때만 False, 그 외 None(기존 동작)."""
         if self._halt_order_guard(code, "BUY") or self._vi_order_guard(code, "BUY"):
             return
         # 2026-07-14: 매도쪽 sell_market 가드와 동일. 이미 추적 중인 매수주문이 있는데
@@ -6893,7 +7200,12 @@ class TradingEngine:
 
         prev_qty_before = int((self.positions.get(code) or {}).get("qty", 0))
         sent_at = datetime.datetime.now()
-        self.kiwoom.send_order_market(self.account, code, qty, ORDER_TYPE_BUY)
+        send_res = self.kiwoom.send_order_market(self.account, code, qty, ORDER_TYPE_BUY)
+        if not order_safety.result_accepted(send_res):
+            # 게이트 거부 또는 SendOrder 오류: 주문이 나가지 않았으므로 추적/카운트/예산 상태를 만들지 않는다.
+            self.pending_buy[code] = False
+            self._safety_log_rejection("BUY", code, qty, float(cur), send_res)
+            return False
         self._last_global_buy_sent_at = sent_at
         self._global_buy_timestamps.append(sent_at)
         self._prune_global_buy_window(sent_at)
@@ -6909,11 +7221,14 @@ class TradingEngine:
                 or self._is_quality_avg_down_eligible(code)
             ),
             "avg_down": bool(avg_down),
+            # SendOrder ret=0 은 접수 '요청' 성공일 뿐 — 체결은 chejan 통보로만 확정한다.
+            "api_accepted": True,
         }
         if avg_down:
             self._quality_avg_down_at[code] = sent_at
         self._append_order_event(
             event="ORDER_SENT",
+            note="SendOrder ret=0 접수요청(체결 미확정)",
             code=code,
             side="BUY",
             qty=qty,
@@ -6936,7 +7251,7 @@ class TradingEngine:
         if tags:
             self._emit_log(f"[FEATURE] 매수태그 {code} " + "/".join(tags))
 
-    def sell_market(self, code: str, reason: str = "") -> None:
+    def sell_market(self, code: str, reason: str = "") -> Optional[bool]:
         if self._halt_order_guard(code, "SELL") or self._vi_order_guard(code, "SELL"):
             return
         # 2026-07-09: 이미 추적 중인 매도주문이 있는데 또 sell_market이 호출되면
@@ -6972,7 +7287,13 @@ class TradingEngine:
         if reason == "partial_take_profit" and bool(PARTIAL_TAKE_PROFIT_ENABLED) and qty > 1:
             qty = max(1, int(qty * float(PARTIAL_TAKE_PROFIT_RATIO)))
         prev_avg = int(pos.get("avg_price", 0) or 0)
-        self.kiwoom.send_order_market(self.account, code, qty, ORDER_TYPE_SELL)
+        send_res = self.kiwoom.send_order_market(self.account, code, qty, ORDER_TYPE_SELL)
+        if not order_safety.result_accepted(send_res):
+            self.pending_sell[code] = False
+            self._safety_log_rejection(
+                "SELL", code, qty, float(self.current_price.get(code, 0) or prev_avg or 0), send_res
+            )
+            return False
         self.pending_orders[code] = {
             "side": "sell",
             "qty": qty,
@@ -6982,14 +7303,16 @@ class TradingEngine:
             "sent_at": datetime.datetime.now(),
             "fills_notified_qty": 0,
             "order_px_ref": float(self.current_price.get(code, 0) or prev_avg or 0),
+            "api_accepted": True,
         }
+        _sell_note = f"reason={reason}" if reason else ""
         self._append_order_event(
             event="ORDER_SENT",
             code=code,
             side="SELL",
             qty=qty,
             price=float(self.current_price.get(code, 0) or prev_avg or 0),
-            note=f"reason={reason}" if reason else "",
+            note=(_sell_note + " " if _sell_note else "") + "SendOrder ret=0 접수요청(체결 미확정)",
         )
         self._emit_log(f"[SELL-ORDER] {code} qty={qty} reason={reason or '-'}")
 
@@ -8900,6 +9223,11 @@ class TradingEngine:
                 self._disconnected_at = datetime.datetime.now()
         else:
             self._disconnected_at = None
+        # 안전장치: 연결 상태 반영 + 복구 시 잔고·미체결 재확인 예약(완료 전까지 주문 차단)
+        try:
+            self._safety_on_tick(st == 1)
+        except Exception as e:
+            self._emit_log(f"[SAFETY] on_tick 연동 예외: {type(e).__name__}: {e}")
 
         if not self._is_market_open():
             self._sync_holding_current_prices(interval_sec=30.0)
@@ -8961,7 +9289,8 @@ class TradingEngine:
                     if add_qty <= 0:
                         continue
                     n = int(self._quality_avg_down_count.get(code, 0) or 0) + 1
-                    self.buy_market(code, qty_override=add_qty, avg_down=True)
+                    if self.buy_market(code, qty_override=add_qty, avg_down=True) is False:
+                        break  # 안전게이트/SendOrder 오류로 미전송 — 다음 틱에 재평가
                     self._emit_log(
                         f"[AVG-DOWN] {code} qty={add_qty} "
                         f"회차={n}/{int(QUALITY_AVG_DOWN_MAX)}"
@@ -8976,7 +9305,8 @@ class TradingEngine:
                     add_qty = self._scale_in_order_qty(code)
                     if add_qty <= 0:
                         continue
-                    self.buy_market(code, qty_override=add_qty)
+                    if self.buy_market(code, qty_override=add_qty) is False:
+                        break  # 미전송 — 추가매수 완료 표시를 하지 않고 다음 틱에 재평가
                     self._scale_in_done[code] = True
                     self._emit_log(f"[SCALE-IN] {code} qty={add_qty}")
                     break
@@ -8985,7 +9315,8 @@ class TradingEngine:
 
         for _score, code in self._ranked_buy_candidates()[:1]:
             try:
-                self.buy_market(code)
+                if self.buy_market(code) is False:
+                    break  # 미전송 — 다음 틱에 재평가
                 self._emit_log(f"[BUY-SCORE] {code} score={_score:.3f}")
                 break
             except Exception:
@@ -9015,6 +9346,9 @@ class TradingEngine:
         self.sync_portfolio(password=account_password)
         today = datetime.date.today()
         self._refresh_mock_server_flag()
+        # 안전장치: 서버 구분/주문 게이트 상태를 부팅 로그에 남기고, 증권사 미체결을 1회 기록(실패해도 거래는 막지 않음)
+        self._emit_log(f"[SAFETY] 부팅 — {self.safety_status_text()}")
+        self.safety_startup_check()
         if self._is_mock_trading():
             if bool(MOCK_LIVE_PARITY):
                 self._emit_log(
@@ -9327,6 +9661,33 @@ class TradingWindow(QMainWindow):
         row2.addWidget(self.btn_dashboard)
         row2.addWidget(self.btn_stop)
 
+        # 0단계 안전장치: 신규매수 차단(A) / 신규주문 전체 차단(B) / 긴급정지(C) — 기존 "정지"와 별개
+        row_safety = QHBoxLayout()
+        self.lbl_safety = QLabel("안전: -")
+        self.lbl_safety.setStyleSheet(
+            "background:#fff7ed; border:1px solid #fdba74; border-radius:6px; padding:4px 8px; font-weight:600;"
+        )
+        self.btn_block_buys = QPushButton("신규매수 차단")
+        self.btn_block_all = QPushButton("주문 전체 차단")
+        self.btn_emergency = QPushButton("긴급정지")
+        for _b in (self.btn_block_buys, self.btn_block_all, self.btn_emergency):
+            _b.setFixedHeight(28)
+            _b.setFixedWidth(112)
+            _b.setStyleSheet("font-size:11px; padding:4px 6px; font-weight:600;")
+        self.btn_emergency.setStyleSheet(
+            "font-size:11px; padding:4px 6px; font-weight:700; background:#dc2626; color:white;"
+        )
+        self.btn_block_buys.setToolTip("A. 신규 매수만 차단합니다. 매도(손절·익절)는 기존대로 동작합니다.")
+        self.btn_block_all.setToolTip(order_safety.NOTICE_BLOCK_ALL)
+        self.btn_emergency.setToolTip(order_safety.NOTICE_EMERGENCY)
+        self.btn_block_buys.clicked.connect(self._toggle_block_buys)
+        self.btn_block_all.clicked.connect(self._toggle_block_all)
+        self.btn_emergency.clicked.connect(self._emergency_stop)
+        row_safety.addWidget(self.lbl_safety, 1)
+        row_safety.addWidget(self.btn_block_buys)
+        row_safety.addWidget(self.btn_block_all)
+        row_safety.addWidget(self.btn_emergency)
+
         # 전략/시장/AI/스캔 — 가로 과확장 방지용 2줄
         self.lbl_strategy = QLabel("전략: -")
         self.lbl_regime = QLabel("시장: -")
@@ -9371,6 +9732,7 @@ class TradingWindow(QMainWindow):
         layout.addLayout(row1)
         layout.addLayout(row_mid)
         layout.addLayout(row2)
+        layout.addLayout(row_safety)
         layout.addLayout(row_strat)
 
         self.tabs = QTabWidget()
@@ -10044,10 +10406,94 @@ class TradingWindow(QMainWindow):
         if self.engine.timer.isActive():
             self.engine.timer.stop()
             self.lbl_hint.setText("자동매매를 일시 정지했습니다.")
+            # 정지 동안은 손절·익절 판단(on_tick)도 실행되지 않음을 숨기지 않는다.
+            self._append_log(f"[SAFETY] {order_safety.NOTICE_STOP_PAUSE}")
         else:
             self.engine.timer.start()
             self.lbl_hint.setText("자동매매를 재개했습니다.")
         self.refresh_ui()
+
+    # --- 0단계 안전장치 GUI ------------------------------------------------
+    def _safety_gate_obj(self) -> "order_safety.OrderSafetyGate":
+        if self.engine is not None:
+            return self.engine._safety_gate()
+        return order_safety.get_gate()
+
+    def _refresh_safety_widgets(self) -> None:
+        gate = self._safety_gate_obj()
+        st = gate.status()
+        if self.engine is not None:
+            self.lbl_safety.setText(self.engine.safety_status_text())
+        else:
+            flags = order_safety.status_flags(st)
+            self.lbl_safety.setText(
+                "안전: 엔진 시작 전 | 실주문 " + ("허용 설정" if st["live_orders_enabled"] else "차단")
+                + (" | " + ", ".join(flags) if flags else "")
+            )
+        self.btn_block_buys.setText("매수차단 해제" if st["block_buys"] else "신규매수 차단")
+        self.btn_block_all.setText("전체차단 해제" if st["block_all"] else "주문 전체 차단")
+        self.btn_emergency.setText("긴급정지 해제" if st["emergency"] else "긴급정지")
+
+    def _toggle_block_buys(self) -> None:
+        gate = self._safety_gate_obj()
+        on = not gate.block_buys
+        if self.engine is not None:
+            self.engine.safety_set_block_buys(on)
+        else:
+            gate.set_block_buys(on)
+        self._append_log(f"[SAFETY] 신규 매수 차단 {'ON' if on else 'OFF'}")
+        self._refresh_safety_widgets()
+
+    def _toggle_block_all(self) -> None:
+        gate = self._safety_gate_obj()
+        on = not gate.block_all
+        if self.engine is not None:
+            self.engine.safety_set_block_all(on)
+        else:
+            gate.set_block_all(on)
+        self._append_log(f"[SAFETY] 신규 주문 전체 차단 {'ON' if on else 'OFF'}")
+        if on:
+            self._append_log(f"[SAFETY] {order_safety.NOTICE_BLOCK_ALL}")
+        self._refresh_safety_widgets()
+
+    def _emergency_stop(self) -> None:
+        from PyQt5.QtWidgets import QMessageBox
+
+        gate = self._safety_gate_obj()
+        if gate.emergency:
+            ans = QMessageBox.question(
+                self, "긴급정지 해제", "긴급정지를 해제할까요? (신규 매수 차단 스위치는 별도입니다)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if ans == QMessageBox.Yes:
+                if self.engine is not None:
+                    self.engine.safety_clear_emergency()
+                else:
+                    gate.clear_emergency()
+                self._append_log("[SAFETY] 긴급정지 해제")
+            self._refresh_safety_widgets()
+            return
+        ans = QMessageBox.question(
+            self, "긴급정지", order_safety.NOTICE_EMERGENCY + "\n\n지금 실행할까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ans != QMessageBox.Yes:
+            return
+        if self.engine is None:
+            gate.activate_emergency("엔진 시작 전 긴급정지")
+            self._append_log("[SAFETY] 긴급정지(엔진 시작 전): 신규 매수 차단만 적용됨")
+        else:
+            try:
+                rep = self.engine.safety_emergency_stop()
+                self._append_log(rep.text())
+            except Exception as e:
+                # 엔진 쪽 절차가 실패해도 신규 매수 차단은 반드시 적용한다(fail-safe).
+                gate.activate_emergency("긴급정지 실행 중 예외")
+                self._append_log(
+                    f"[SAFETY] 긴급정지 실행 중 예외 {type(e).__name__}: {e} — 신규 매수 차단은 적용됨. "
+                    "미체결 취소·상태 기록은 완료되지 않았을 수 있으니 HTS/MTS에서 직접 확인하세요."
+                )
+        self._refresh_safety_widgets()
 
     def _sync_force_scan_button_text(self) -> None:
         mode = "ON" if self.force_scan_anytime else "OFF"
@@ -10118,6 +10564,10 @@ class TradingWindow(QMainWindow):
             return
 
     def refresh_ui(self) -> None:
+        try:
+            self._refresh_safety_widgets()
+        except Exception:
+            pass
         if self.engine is None:
             return
         try:
@@ -10838,6 +11288,9 @@ class TradingWindow(QMainWindow):
                 pass
 
 
+_INSTANCE_LOCK: Optional["order_safety.InstanceLock"] = None  # 프로세스 수명 동안 유지
+
+
 def main():
     # CMD에서 한글 출력 시 깨짐 완화
     try:
@@ -10855,6 +11308,23 @@ def main():
                 sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+    # 중복 실행 방지: 이미 실행 중이면 두 번째 실행은 여기서 종료 (키움 로그인·주문 경로 충돌 방지)
+    global _INSTANCE_LOCK
+    _INSTANCE_LOCK = order_safety.InstanceLock()
+    if not _INSTANCE_LOCK.acquire():
+        _msg = (
+            "자동매매 프로그램이 이미 실행 중이거나 중복 실행 여부를 확인할 수 없어 종료합니다.\n"
+            "이미 켜진 창을 사용하세요. (뮤텍스: " + _INSTANCE_LOCK.name + ")"
+        )
+        print(f"[SAFETY] {_msg}", flush=True)
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(0, _msg, "중복 실행 차단", 0x10)
+        except Exception:
+            pass
+        sys.exit(2)
 
     # COM 초기화(환경에 따라 필수일 수 있음)
     try:

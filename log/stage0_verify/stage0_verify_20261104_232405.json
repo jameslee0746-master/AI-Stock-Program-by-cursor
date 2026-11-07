@@ -1,0 +1,152 @@
+{
+  "results": [
+    {
+      "item": "⑥ 두 번째 실행 차단: 실제 main.main() E2E (로그인 전 단계)",
+      "status": "PASS",
+      "detail": "EXITCODE 2 MSGBOX 1"
+    },
+    {
+      "item": "① 키움 OCX 로드",
+      "status": "PASS",
+      "detail": "KHOPENAPI.KHOpenAPICtrl.1 로드됨"
+    },
+    {
+      "item": "① 키움 로그인",
+      "status": "PASS",
+      "detail": "GetConnectState=1, 계좌=8137******, 계좌목록 1개"
+    },
+    {
+      "item": "① 서버 구분(GetServerGubun)",
+      "status": "PASS",
+      "detail": "GetServerGubun='1' → 모의투자; kiwoom.is_mock_server=True, server_gubun='1'"
+    },
+    {
+      "item": "① 모의서버+연결 정상일 때 게이트 판정(실제 probe)",
+      "status": "PASS",
+      "detail": "allowed=True reason= (모의 기존 동작 유지 확인, 주문은 보내지 않음)"
+    },
+    {
+      "item": "① 서버 구분 확인 실패 시 주문 차단(실제 send_order_market)",
+      "status": "PASS",
+      "detail": "status=BLOCKED reason=SERVER_UNKNOWN SendOrder시도 증가=0"
+    },
+    {
+      "item": "② 실시간 체결 수신",
+      "status": "NOT VERIFIED",
+      "detail": "등록 호출은 예외 없이 완료, 20초간 수신 0건 — 현재 장외(23:24)라 체결 이벤트가 없는 것이 정상. 장중 재검증 필요"
+    },
+    {
+      "item": "② 현재가 TR(opt10001) 응답",
+      "status": "PASS",
+      "detail": "005930 현재가(장외라 종가) = 221500"
+    },
+    {
+      "item": "③ 잔고 조회 TR(opw00018) 응답",
+      "status": "PASS",
+      "detail": "rows=0, 비번=설정, last_holdings_ok_at 갱신=True"
+    },
+    {
+      "item": "④ opt10075 조회 요청/응답",
+      "status": "PASS",
+      "detail": "응답 수신, 미체결 0건. 서버 메시지=OnReceiveMsg:  조회가 완료되었습니다."
+    },
+    {
+      "item": "④ 미체결 데이터 파싱",
+      "status": "NOT VERIFIED",
+      "detail": "미체결 0건이라 필드 파싱을 확인할 수 없음 (주문을 내지 않는 원칙상 장중 실제 미체결이 생겼을 때 재검증)"
+    },
+    {
+      "item": "④ 조회 실패 경로(실제 TR 타임아웃)",
+      "status": "PASS",
+      "detail": "1ms 대기 → None 반환(실패로 인식)"
+    },
+    {
+      "item": "④ 취소 주문 요청/반환값",
+      "status": "NOT VERIFIED",
+      "detail": "취소할 실제 미체결 주문이 없음(주문을 내지 않으므로 검증 불가)"
+    },
+    {
+      "item": "② GUI+실제 키움 객체 생성",
+      "status": "PASS",
+      "detail": "label='안전: 모의서버 | 차단 없음'"
+    },
+    {
+      "item": "② 신규매수 차단 버튼(실제 키움 객체)",
+      "status": "PASS",
+      "detail": "매수→BLOCKED/BLOCK_BUY, 매도 게이트 허용=True, label='안전: 모의서버 | 매수차단', 버튼='매수차단 해제'"
+    },
+    {
+      "item": "② 주문 전체 차단 버튼(실제 키움 객체)",
+      "status": "PASS",
+      "detail": "매수→BLOCKED/BLOCK_ALL, 매도→BLOCKED/BLOCK_ALL, label='안전: 모의서버 | 주문전체차단'"
+    },
+    {
+      "item": "② 일반 정지 vs 긴급정지 구분(실제 엔진 메서드, 더미 타이머)",
+      "status": "PASS",
+      "detail": "정지: 타이머 정지·게이트 불변=True; 긴급정지: 게이트 emergency=True, 매수→EMERGENCY, 타이머 그대로 정지=True, 상태JSON=['emergency_stop_20261104_232507.json'], label='안전: 모의서버 | 긴급정지', 정지버튼='재개', 긴급버튼='긴급정지 해제'"
+    },
+    {
+      "item": "④ 긴급정지 시 실제 미체결 조회",
+      "status": "PASS",
+      "detail": "GUI 로그: [23:25:07] [긴급정지] 미체결 0건 확인 | [23:25:07] 긴급정지: 신규 매수 차단 + 미체결 취소 요청 + 계좌 상태 기록을 수행했습니다. 손절·익절 로직의 켜짐/꺼짐 상태는 이 기능이 바꾸지 않습니다. 앱 종료·연결 단절·정지 상태에서는 자동 손절이 보장되지 않습니다. | [긴급정지] 미체결 0건 확인 | 긴급정지: 신규 매수 차단 + "
+    },
+    {
+      "item": "② 긴급정지 해제/재개 버튼",
+      "status": "PASS",
+      "detail": "emergency=False, timer=True"
+    },
+    {
+      "item": "⑤ 이 구간 SendOrder 실제 호출",
+      "status": "PASS",
+      "detail": "하네스가 감지한 SendOrder 시도 증가=0"
+    },
+    {
+      "item": "③ 복구 직후 동기화 전 주문 차단(실제 probe, 단절은 수동 재현)",
+      "status": "PASS",
+      "detail": "매수→BLOCKED/RESYNC_PENDING"
+    },
+    {
+      "item": "④ 미체결 조회 실패 시 주문 재개 방지(실제 TR 타임아웃)",
+      "status": "FAIL",
+      "detail": "재확인 후 resync_required=False, 매수→SENDORDER_EXCEPTION"
+    },
+    {
+      "item": "③ 잔고+미체결 둘 다 성공 후 주문 재개(실제 TR)",
+      "status": "FAIL",
+      "detail": "resync_required=False, 게이트 허용=False"
+    },
+    {
+      "item": "③ 실제 API 연결 끊김 유도",
+      "status": "NOT VERIFIED",
+      "detail": "CommTerminate 후에도 GetConnectState=1 — OpenAPI 가 이 함수로 연결을 끊지 않음. 실제 단절은 네트워크 차단 등 외부 조작이 필요"
+    },
+    {
+      "item": "⑤ SendOrder 반환값 기록 / 0≠체결 / 실패 쿨다운 / 중복 주문",
+      "status": "NOT VERIFIED",
+      "detail": "매수·매도 주문을 보내지 않는 원칙상 실제 키움 SendOrder 경로는 검증하지 않음 (자동 테스트의 가짜 객체 결과만 존재)"
+    },
+    {
+      "item": "전체 SendOrder 시도(하네스 감지)",
+      "status": "FAIL",
+      "detail": "시도 1건: [['주문', '0101', '8137514011', 1, '005930', 1, 0, '03', '']]"
+    },
+    {
+      "item": "파일 변화(기존 데이터/로그 삭제 여부)",
+      "status": "PASS",
+      "detail": "삭제 0건 [], 신규/변경 1건 ['waiting_status_log.csv']"
+    }
+  ],
+  "sendorder_attempts": [
+    [
+      "주문",
+      "0101",
+      "8137514011",
+      1,
+      "005930",
+      1,
+      0,
+      "03",
+      ""
+    ]
+  ]
+}

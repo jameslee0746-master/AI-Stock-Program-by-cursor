@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "item": "키움 로그인",
+      "status": "NOT VERIFIED",
+      "detail": "로그인 완료 못함: RuntimeError: Login failed: err_code=-1 (로그인 이벤트 타임아웃 또는 사용자 취소) last_error=CommConnect timeout after 120000ms"
+    }
+  ],
+  "extra": {
+    "start": "2026-11-06 09:51:54.806529",
+    "regular_session_estimated": true
+  },
+  "sendorder_attempts": []
+}

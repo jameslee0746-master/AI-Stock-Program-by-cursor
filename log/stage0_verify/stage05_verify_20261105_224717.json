@@ -1,0 +1,34 @@
+{
+  "results": [
+    {
+      "item": "키움 로그인",
+      "status": "PASS",
+      "detail": "GetConnectState=1, 계좌=8137******"
+    },
+    {
+      "item": "서버 구분",
+      "status": "PASS",
+      "detail": "GetServerGubun='1'(모의투자)"
+    },
+    {
+      "item": "로그인 확인만 수행",
+      "status": "PASS",
+      "detail": "요청에 따라 실시간·opt10075·단절 검증은 하지 않고 종료. SendOrder 0"
+    },
+    {
+      "item": "SendOrder 호출 횟수(하네스 감지)",
+      "status": "PASS",
+      "detail": "0건 []"
+    },
+    {
+      "item": "LIVE_ORDERS_ENABLED",
+      "status": "PASS",
+      "detail": "=0"
+    }
+  ],
+  "extra": {
+    "start": "2026-11-05 22:47:18.416617",
+    "regular_session_estimated": false
+  },
+  "sendorder_attempts": []
+}

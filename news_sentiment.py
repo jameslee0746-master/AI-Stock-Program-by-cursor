@@ -290,7 +290,7 @@ def _http_get(url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
     if headers:
         h.update(headers)
     req = Request(url, headers=h)
-    with urlopen(req, timeout=NEWS_FETCH_TIMEOUT_SEC) as resp:
+        with urlopen(req, timeout=NEWS_FETCH_TIMEOUT_SEC) as resp:
         return resp.read()
 
 
@@ -298,8 +298,8 @@ def _decode_html(raw: bytes) -> str:
     for enc in ("utf-8", "euc-kr", "cp949"):
         try:
             return raw.decode(enc)
-        except Exception:
-            continue
+            except Exception:
+                continue
     return raw.decode("utf-8", errors="replace")
 
 
@@ -1148,7 +1148,7 @@ def _gemini_score_for_stock(name: str, code: str, trusted: List[NewsItem]) -> Op
                 "NEWS",
                 f"{code_s} {name or '-'} score={score:+.2f} | {sum_txt}",
             )
-        return score
+                return score
     except HTTPError as e:
         err_body = ""
         try:
