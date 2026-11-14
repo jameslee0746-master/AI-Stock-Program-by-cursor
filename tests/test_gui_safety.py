@@ -29,6 +29,23 @@ import order_safety as osf  # noqa: E402
 
 _main = None
 _app = None
+_ENV_KEYS = (
+    "STAGE2C_SAFE_MODE",
+    "STAGE2C_LOGIN_ONLY",
+    "STAGE2C_COLLECT_ONLY",
+    "STAGE2D_CODES",
+    "SCALP_ENABLED",
+    "LIVE_ORDERS_ENABLED",
+)
+_ENV_SNAP = {k: os.environ.get(k) for k in _ENV_KEYS}
+
+
+def tearDownModule():
+    for k, v in _ENV_SNAP.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
 
 def _load_main():
@@ -68,6 +85,9 @@ class _GuiBase(unittest.TestCase):
     def setUp(self):
         from PyQt5.QtWidgets import QMessageBox
 
+        self._env_iso = {k: os.environ.get(k) for k in _ENV_KEYS}
+        for k in _ENV_KEYS:
+            os.environ.pop(k, None)
         self.QMessageBox = QMessageBox
         # 1) 슬롯 안에서 예외가 나면 PyQt5 는 abort 하므로 excepthook 으로 수집해 단언한다.
         self.exceptions = []
@@ -97,6 +117,11 @@ class _GuiBase(unittest.TestCase):
         sys.excepthook = self._old_hook
         for p in self._patches:
             p.stop()
+        for k, v in self._env_iso.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         if self.win is not None:
             try:
                 for t in self.win.findChildren(type(self.win._ui_timer)) if hasattr(self.win, "_ui_timer") else []:
@@ -152,6 +177,7 @@ class WindowCreationTests(_GuiBase):
         self.assertTrue(w.btn_force_scan.text().startswith("테스트스캔"))
         for lbl in ("lbl_status", "lbl_market", "lbl_positions", "lbl_waiting"):
             self.assertTrue(getattr(w, lbl).isVisible(), lbl)
+        self.assertEqual(w.lbl_auto_start.text(), "자동시작: ON")
         self.assertEqual(w.tabs.count(), 2)
         self.assertEqual([w.tabs.tabText(i) for i in range(2)], ["국내주식", "해외주식"])
         self.assertTrue(w.log.isVisible() or w.log.parent() is not None)
@@ -174,7 +200,15 @@ class WindowCreationTests(_GuiBase):
         self.assertTrue(txt.startswith("안전:"), txt)
         self.assertIn("엔진 시작 전", txt)
         self.assertIn("실주문 차단", txt)
+        self.assertEqual(w.lbl_auto_start.text(), "자동시작: ON")
         _shot(w, "01_initial")
+
+    def test_login_only_auto_start_label(self):
+        w = self.make_window()
+        self.assertEqual(w.lbl_auto_start.text(), "자동시작: ON")
+        self.m._apply_stage2c_login_only_ui(w)
+        self.assertEqual(w.lbl_auto_start.text(), "자동시작: LOGIN_ONLY 차단")
+        self.assertFalse(w.btn_overseas_login.isEnabled())
 
     def test_safety_buttons_do_not_overlap_existing_buttons(self):
         from PyQt5.QtCore import QPoint, QRect

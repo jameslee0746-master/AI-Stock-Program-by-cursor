@@ -1,0 +1,186 @@
+{
+  "verdict": "WARN",
+  "insufficient_reason": "",
+  "session_id": "s2c-c7110793f9bd",
+  "session_start": "2026-11-13T14:29:40.538186",
+  "session_finished": "2026-11-13T15:58:17.935716",
+  "paths": {
+    "jsonl": "C:\\cursorAI_work\\logs\\stage2c_login_only_20261113_142940_c7110793f9bd.jsonl",
+    "stats": "C:\\cursorAI_work\\data\\scalp\\collector_stats.json",
+    "tick": "C:\\cursorAI_work\\data\\scalp\\tick_005930_20261113_observe_part001.csv",
+    "orderbook": "C:\\cursorAI_work\\data\\scalp\\orderbook_005930_20261113_observe_part001.csv"
+  },
+  "checks": [
+    {
+      "name": "jsonl_session_start_count",
+      "status": "PASS",
+      "detail": "SESSION_START=1"
+    },
+    {
+      "name": "jsonl_session_finished_count",
+      "status": "PASS",
+      "detail": "SESSION_FINISHED=1"
+    },
+    {
+      "name": "jsonl_session_id_unique",
+      "status": "PASS",
+      "detail": "session_ids=['s2c-c7110793f9bd']"
+    },
+    {
+      "name": "stats_session_id_match",
+      "status": "PASS",
+      "detail": "stats='s2c-c7110793f9bd' jsonl='s2c-c7110793f9bd'"
+    },
+    {
+      "name": "stats_session_start_match",
+      "status": "PASS",
+      "detail": "stats='2026-11-13T14:29:40.538186' start.ts='2026-11-13T14:29:40.538186'"
+    },
+    {
+      "name": "stats_session_finished_match",
+      "status": "PASS",
+      "detail": "stats='2026-11-13T15:58:17.935716' finished.ts='2026-11-13T15:58:17.935716'"
+    },
+    {
+      "name": "csv_recv_iso_in_session_window",
+      "status": "PASS",
+      "detail": "tick_out=0 hoga_out=0 window=2026-11-13T14:29:40.538186..2026-11-13T15:58:17.935716"
+    },
+    {
+      "name": "shutdown_complete",
+      "status": "PASS",
+      "detail": "shutdown_status='COMPLETE'"
+    },
+    {
+      "name": "stats_dump_ok",
+      "status": "PASS",
+      "detail": "stats_dump_ok=True shutdown_status='COMPLETE'"
+    },
+    {
+      "name": "bridge_closed",
+      "status": "PASS",
+      "detail": "bridge_status='CLOSED'"
+    },
+    {
+      "name": "screen_8101",
+      "status": "PASS",
+      "detail": "8101='NOT_REGISTERED'"
+    },
+    {
+      "name": "screen_8102",
+      "status": "PASS",
+      "detail": "8102='NOT_REGISTERED'"
+    },
+    {
+      "name": "screens_active_false",
+      "status": "PASS",
+      "detail": "screens_active=False"
+    },
+    {
+      "name": "pending_zero",
+      "status": "PASS",
+      "detail": "all=0"
+    },
+    {
+      "name": "terminal_losses_zero",
+      "status": "PASS",
+      "detail": "terminal_losses=0"
+    },
+    {
+      "name": "setrealremove_8101",
+      "status": "PASS",
+      "detail": "8101=1"
+    },
+    {
+      "name": "setrealremove_8102",
+      "status": "PASS",
+      "detail": "8102=1"
+    },
+    {
+      "name": "sendorder_orig_zero",
+      "status": "PASS",
+      "detail": "SendOrder total=0"
+    },
+    {
+      "name": "commterminate_orig_zero",
+      "status": "PASS",
+      "detail": "CommTerminate total=0"
+    },
+    {
+      "name": "tick_rows_vs_write_ok",
+      "status": "PASS",
+      "detail": "csv=37711 expected=37711 files.rows=37711 tick_callbacks=37711"
+    },
+    {
+      "name": "orderbook_rows_vs_write_ok",
+      "status": "PASS",
+      "detail": "csv=13826 expected=13826 files.rows=13826 hoga_callbacks=13826"
+    },
+    {
+      "name": "write_ok_sum",
+      "status": "PASS",
+      "detail": "csv_sum=51537 write_ok=51537"
+    },
+    {
+      "name": "tick_seq_monotonic",
+      "status": "PASS",
+      "detail": "reversals=0"
+    },
+    {
+      "name": "orderbook_seq_monotonic",
+      "status": "PASS",
+      "detail": "reversals=0"
+    },
+    {
+      "name": "tick_recv_iso_monotonic",
+      "status": "PASS",
+      "detail": "reversals=0"
+    },
+    {
+      "name": "orderbook_recv_iso_monotonic",
+      "status": "PASS",
+      "detail": "reversals=0"
+    },
+    {
+      "name": "fid_missing_zero",
+      "status": "PASS",
+      "detail": "tick_csv=0 hoga_csv=0 fid13_missing=0 fid15_missing=0"
+    },
+    {
+      "name": "gap_over_60s",
+      "status": "WARN",
+      "detail": "tick=1 orderbook=0 merged=0"
+    }
+  ],
+  "notes": {
+    "gaps": {
+      "tick": [
+        {
+          "from": "2026-11-13T15:19:58.107301",
+          "to": "2026-11-13T15:30:02.391477",
+          "gap_sec": 604.284176
+        }
+      ],
+      "orderbook": [],
+      "merged": []
+    },
+    "tick_hoga_delta_sec": {
+      "tick_first": "2026-11-13T14:30:00.066004",
+      "tick_last": "2026-11-13T15:30:02.391477",
+      "orderbook_first": "2026-11-13T14:30:00.069128",
+      "orderbook_last": "2026-11-13T15:30:02.483631",
+      "start_delta_sec": -0.003124,
+      "end_delta_sec": -0.092154
+    },
+    "dup_suspect": 14570,
+    "dup_suspect_note": "dup_suspect 는 참고 지표이며 데이터 손실(terminal_losses)로 판정하지 않는다."
+  },
+  "counts": {
+    "jsonl_events": 539,
+    "tick_rows": 37711,
+    "orderbook_rows": 13826,
+    "write_ok": 51537,
+    "dup_suspect": 14570,
+    "terminal_losses": 0
+  }
+}

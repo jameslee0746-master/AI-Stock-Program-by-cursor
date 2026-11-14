@@ -1,0 +1,171 @@
+{
+  "ok": false,
+  "ocx_loaded": true,
+  "isnull": false,
+  "python": "3.9.12 (tags/v3.9.12:b28265d, Mar 23 2022, 23:39:15) [MSC v.1929 32 bit (Intel)]",
+  "qt_platform": "windows",
+  "env": {
+    "STAGE2C_SAFE_MODE": "1",
+    "STAGE2C_COLLECT_ONLY": "1",
+    "STAGE2C_LOGIN_ONLY": "0",
+    "LIVE_ORDERS_ENABLED": "0",
+    "SCALP_ENABLED": "1",
+    "STAGE2C_AUDIT_DIR": null,
+    "QT_QPA_PLATFORM": null
+  },
+  "guard": {
+    "installed": true,
+    "intact": true,
+    "orig_calls_after_prepare": 2,
+    "send_order_blocked": 1,
+    "comm_terminate_blocked": 0,
+    "collect_only_blocked": 10
+  },
+  "audit": {
+    "ready": true,
+    "healthy": true,
+    "channel": "runtime",
+    "write_failures": 0,
+    "path": "C:\\cursorAI_work\\logs\\stage2c_login_only_20261113_104803_0091770ef22f.jsonl",
+    "fallback": false
+  },
+  "allowed": {
+    "GetConnectState": 0,
+    "GetServerGubun": "",
+    "orig_delta": 2
+  },
+  "blocked": [
+    {
+      "key": "SetRealReg_9001",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "SetRealReg_9051",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "SetRealReg_ALL",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "SetRealReg_bad_fid",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "SetRealRemove_ALL_ALL",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "SetRealRemove_9001_ALL",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "GetLoginInfo_ACCNO",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "GetLoginInfo_ACCLIST",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "GetLoginInfo_USER_ID",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "CommRqData",
+      "blocked": true,
+      "exc": "CollectOnlyBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "SendOrder",
+      "blocked": true,
+      "exc": "SendOrderBlockedError",
+      "orig_unchanged": true
+    },
+    {
+      "key": "CommTerminate",
+      "blocked": true,
+      "exc": "SendOrderBlockedError",
+      "orig_unchanged": true
+    }
+  ],
+  "orig_forbidden": {
+    "SendOrder": 0,
+    "CommTerminate": 0,
+    "CommRqData": 0,
+    "CommConnect": 0,
+    "orig_names_tapped": [],
+    "note": "tap on g.orig may miss counted_orig closure; orig_calls_block_delta is authoritative"
+  },
+  "jsonl_path": "C:\\cursorAI_work\\logs\\stage2c_login_only_20261113_104803_0091770ef22f.jsonl",
+  "jsonl_events": [
+    "SESSION_START",
+    "GUARD_INSTALLED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "GUARD_BLOCKED",
+    "SHUTDOWN_STARTED",
+    "SESSION_FINISHED"
+  ],
+  "errors": [],
+  "called_main": false,
+  "called_login": false,
+  "called_commconnect": false,
+  "orig_calls_after_blocks": 4,
+  "orig_calls_block_delta": 0,
+  "guard_after_blocks": {
+    "intact": true,
+    "send_order_blocked": 2,
+    "comm_terminate_blocked": 1,
+    "collect_only_blocked": 20,
+    "commrqdata_blocked": 2,
+    "setrealreg_blocked": 6,
+    "setrealremove_blocked": 4,
+    "getlogininfo_blocked": 6
+  },
+  "jsonl": {
+    "exists": true,
+    "channel_runtime": true,
+    "has_SESSION_START": true,
+    "has_GUARD_INSTALLED": true,
+    "has_LOGIN_SUCCEEDED": false,
+    "has_MOCK_SERVER_CONFIRMED": false,
+    "has_WATCH_TIMER_STARTED": false,
+    "has_SHUTDOWN_STARTED": true,
+    "has_SESSION_FINISHED": true,
+    "has_SESSION_INCOMPLETE": false,
+    "still_sensitive": true,
+    "fake_test_mix": false,
+    "write_failures": 0,
+    "healthy_final": true,
+    "ready": true
+  }
+}

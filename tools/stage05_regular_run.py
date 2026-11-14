@@ -12,9 +12,10 @@
 
 사용:
   python -X utf8 tools\\stage05_regular_run.py
-      → 이미 정규장(09:00~15:30)일 때만 즉시 검증
+      → 정규장(09:00~15:30)이면 즉시 검증
+      → 평일 07:00~09:00 이면 지금 모의투자 로그인 후 09:00까지 대기했다가 검증
   python -X utf8 tools\\stage05_regular_run.py --login-now-wait
-      → 장 시작 전에 모의투자 로그인만 하고, 09:00에 실시간 검증을 시작한다
+      → 장 시작 전(07:00 이전도 가능)에 모의투자 로그인만 하고, 09:00에 실시간 검증을 시작한다
   python -X utf8 tools\\stage05_regular_run.py --login-check
       → 모의투자 로그인만 확인하고 종료 (장외 가능, 실시간 검증 없음)
 결과:  log/stage0_verify/stage05_verify_날짜시간.txt/.json
@@ -68,13 +69,16 @@ def preflight(argv: Sequence[str], now: Optional[datetime.datetime] = None) -> T
         if (now.hour * 60 + now.minute) >= 15 * 60 + 30:
             return False, f"장 마감 이후({now:%H:%M}) — 다음날 장 시작 전에 --login-now-wait 로 실행하세요", RC_OFFHOURS
         return True, "wait", 0
-    if not is_regular_session(now):
-        return (
-            False,
-            f"장외({now:%Y-%m-%d %H:%M}) — 정규장에 바로 돌리거나, 장 시작 전이면 --login-now-wait 로 로그인만 먼저 하세요",
-            RC_OFFHOURS,
-        )
-    return True, "", 0
+    if is_regular_session(now):
+        return True, "", 0
+    hm = now.hour * 60 + now.minute
+    if now.weekday() < 5 and 7 * 60 <= hm < 9 * 60:
+        return True, "wait", 0
+    return (
+        False,
+        f"장외({now:%Y-%m-%d %H:%M}) — 평일 07:00 이후에 실행하거나, 더 이전이면 --login-now-wait 로 로그인만 먼저 하세요",
+        RC_OFFHOURS,
+    )
 
 
 def main() -> int:
@@ -90,8 +94,8 @@ def main() -> int:
     if not os.path.isfile(VERIFY):
         print(f"[stage05_regular_run] 검증 스크립트 없음: {VERIFY}", flush=True)
         return 2
-    wait = WAIT_FLAG in sys.argv
-    check = CHECK_FLAG in sys.argv
+    wait = WAIT_FLAG in sys.argv or reason == "wait"
+    check = CHECK_FLAG in sys.argv or reason == "login-check"
     sys.path.insert(0, ROOT)
     import order_safety as osf
 

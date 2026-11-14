@@ -285,6 +285,15 @@ def make_setreal_entry(
     }
 
 
+def _already_disconnected_error(exc: BaseException) -> bool:
+    """이미 분리된 슬롯을 disconnect 할 때 나는 PyQt TypeError 등."""
+    return "not connected" in str(exc).lower()
+
+
+def _already_connected_error(exc: BaseException) -> bool:
+    return "already connected" in str(exc).lower()
+
+
 class FakeSignal:
     """PyQt 시그널 대신 쓰는 테스트용. slots 로 연결 상태를 확인한다."""
 
@@ -323,13 +332,17 @@ class RealSlotGuard:
             return None
         return fn in known
 
-    def _disconnect(self, fn: Any) -> bool:
+    def _disconnect(self, fn: Any) -> str:
+        """ok | already_gone | fail. already_gone 은 예상된 미연결이며 실패가 아니다."""
         try:
             self.signal.disconnect(fn)
-            return True
+            return "ok"
         except Exception as e:
+            if _already_disconnected_error(e):
+                self.log(f"disconnect 이미 분리됨(예상): {type(e).__name__}: {e}")
+                return "already_gone"
             self.log(f"disconnect 실패: {type(e).__name__}: {e}")
-            return False
+            return "fail"
 
     def attach(self, harness_slot: Any) -> Tuple[bool, str]:
         if self._harness_ours and self.harness_slot is harness_slot and not self._product_ours:
@@ -346,7 +359,8 @@ class RealSlotGuard:
             if prod_on is False:
                 self._product_ours = False
             else:
-                if not self._disconnect(self.product_slot):
+                st = self._disconnect(self.product_slot)
+                if st == "fail":
                     return False, "제품 핸들러 disconnect 실패 — 중복 방지를 위해 하네스를 연결하지 않음"
                 self._product_ours = False
         h_on = self._is_connected(harness_slot)
@@ -369,27 +383,37 @@ class RealSlotGuard:
             h_on = self._is_connected(self.harness_slot)
             if h_on is False:
                 msgs.append("하네스 슬롯 이미 없음")
-            elif not self._disconnect(self.harness_slot):
-                ok = False
-                msgs.append("하네스 disconnect 실패")
             else:
-                msgs.append("하네스 분리")
+                st = self._disconnect(self.harness_slot)
+                if st == "ok":
+                    msgs.append("하네스 분리")
+                elif st == "already_gone":
+                    msgs.append("하네스 슬롯 이미 없음")
+                else:
+                    ok = False
+                    msgs.append("하네스 disconnect 실패")
             self._harness_ours = False
             self.harness_slot = None
+
         p_on = self._is_connected(self.product_slot)
-        if p_on is True or (self._product_ours and not self._harness_ours and p_on is not False):
-            if p_on is True:
-                msgs.append("제품 핸들러 이미 연결 — 재연결 생략")
+        if p_on is True:
+            msgs.append("제품 핸들러 이미 연결 — 재연결 생략")
             self._product_ours = True
-        else:
-            if p_on is None:
-                if self._disconnect(self.product_slot):
-                    msgs.append("제품 핸들러 잔여 연결 분리")
-            try:
-                self.signal.connect(self.product_slot)
+            return ok, msgs
+        if self._product_ours:
+            msgs.append("제품 핸들러 유지(재연결하지 않음)")
+            return ok, msgs
+
+        # attach 에서 제품을 이미 분리함. 같은 슬롯을 다시 disconnect 하지 않는다.
+        try:
+            self.signal.connect(self.product_slot)
+            self._product_ours = True
+            msgs.append("제품 핸들러 재연결")
+        except Exception as e:
+            if _already_connected_error(e):
                 self._product_ours = True
-                msgs.append("제품 핸들러 재연결")
-            except Exception as e:
+                msgs.append("제품 핸들러 재연결 생략(connect가 이미 연결됨을 반환)")
+            else:
                 ok = False
                 msgs.append(f"제품 핸들러 재연결 실패: {e}")
         return ok, msgs

@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "item": "하네스 예외",
+      "status": "FAIL",
+      "detail": "Traceback (most recent call last):\n  File \"C:\\cursorAI_work\\tools\\stage05_kiwoom_verify.py\", line 1247, in <module>\n    rc = main()\n  File \"C:\\cursorAI_work\\tools\\stage05_kiwoom_verify.py\", line 562, in main\n    kiwoom = m.KiwoomOpenAPI()\n  File \"C:\\cursorAI_work\\main.py\", line 2316, in __init__\n    self.OnEventConnect.connect(self._on_event_connect)\nAttributeError: 'KiwoomOpenAPI' object has no attribute 'OnEventConnect'\n"
+    }
+  ],
+  "extra": {
+    "start": "2026-11-13 13:04:01.102818",
+    "regular_session_estimated": true
+  },
+  "sendorder_attempts": []
+}

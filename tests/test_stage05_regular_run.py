@@ -61,6 +61,23 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(rc, R.RC_FORBIDDEN)
 
+    def test_weekday_0700_without_flag_is_wait(self):
+        ok, mode, rc = R.preflight(["stage05_regular_run.py"], datetime.datetime(2026, 11, 10, 7, 5))
+        self.assertTrue(ok)
+        self.assertEqual(mode, "wait")
+        self.assertEqual(rc, 0)
+
+    def test_weekday_0659_without_flag_rejected(self):
+        ok, reason, rc = R.preflight(["stage05_regular_run.py"], datetime.datetime(2026, 11, 10, 6, 59))
+        self.assertFalse(ok)
+        self.assertEqual(rc, R.RC_OFFHOURS)
+        self.assertIn("07:00", reason)
+
+    def test_weekday_0859_without_flag_is_wait(self):
+        ok, mode, rc = R.preflight(["stage05_regular_run.py"], datetime.datetime(2026, 11, 10, 8, 59))
+        self.assertTrue(ok)
+        self.assertEqual(mode, "wait")
+
     def test_login_now_wait_before_open_ok(self):
         ok, mode, rc = R.preflight(
             ["stage05_regular_run.py", "--login-now-wait"], datetime.datetime(2026, 11, 6, 7, 50)
@@ -101,9 +118,13 @@ class PreflightTests(unittest.TestCase):
             timeout=20,
         )
         now = datetime.datetime.now()
-        in_session = now.weekday() < 5 and 9 * 60 <= now.hour * 60 + now.minute < 15 * 60 + 30
+        hm = now.hour * 60 + now.minute
+        in_session = now.weekday() < 5 and 9 * 60 <= hm < 15 * 60 + 30
+        pre_open_wait = now.weekday() < 5 and 7 * 60 <= hm < 9 * 60
         if in_session:
             self.skipTest("정규장이라 실제 거부를 확인할 수 없음")
+        if pre_open_wait:
+            self.skipTest("07:00~09:00 는 장전 대기로 키움에 접속할 수 있어 거부 테스트를 건너뜀")
         self.assertEqual(p.returncode, R.RC_OFFHOURS)
         self.assertIn("거부", p.stdout)
         self.assertNotIn("CommConnect", p.stdout)

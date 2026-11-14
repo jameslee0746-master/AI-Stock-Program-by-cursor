@@ -1466,6 +1466,449 @@ def _scan_console(msg: str) -> None:
         pass
 
 
+def _scalp_log(msg: str, window: Any = None) -> None:
+    line = f"[SCALP] {msg}"
+    _scan_console(line)
+    if window is None:
+        return
+    try:
+        window.scan_message.emit(line)
+    except Exception as e:
+        _scan_console(f"[SCALP] UI 로그 실패: {type(e).__name__}: {e}")
+
+
+def _stage2c_safe_mode() -> bool:
+    return str(os.environ.get("STAGE2C_SAFE_MODE", "")).strip() == "1"
+
+
+def _stage2c_login_only() -> bool:
+    return str(os.environ.get("STAGE2C_LOGIN_ONLY", "")).strip() == "1"
+
+
+def _stage2c_collect_only() -> bool:
+    return str(os.environ.get("STAGE2C_COLLECT_ONLY", "")).strip() == "1"
+
+
+def _abort_if_login_only_without_safe() -> Optional[str]:
+    """LOGIN_ONLY=1 인데 SAFE_MODE≠1 이면 거부 메시지. QApp 생성 전에 호출."""
+    if not _stage2c_login_only():
+        return None
+    if _stage2c_safe_mode():
+        return None
+    return (
+        "STAGE2C_LOGIN_ONLY=1 은 STAGE2C_SAFE_MODE=1 이 필요합니다. "
+        "프로그램을 시작하지 않습니다."
+    )
+
+
+def _abort_if_collect_only_env() -> Optional[str]:
+    """COLLECT_ONLY=1 이면 SAFE_MODE=1 필수, LOGIN_ONLY 와 배타. QApp 생성 전에 호출."""
+    if not _stage2c_collect_only():
+        return None
+    if _stage2c_login_only():
+        return (
+            "STAGE2C_COLLECT_ONLY=1 과 STAGE2C_LOGIN_ONLY=1 은 동시에 사용할 수 없습니다."
+        )
+    if _stage2c_safe_mode():
+        return None
+    return (
+        "STAGE2C_COLLECT_ONLY=1 은 STAGE2C_SAFE_MODE=1 이 필요합니다. "
+        "프로그램을 시작하지 않습니다."
+    )
+
+
+def _stage2c_login_only_fail_notice(window: Any, msg: str) -> None:
+    """LOGIN_ONLY 실패 안내. 계좌번호·USER_ID·기본계좌 상수를 출력하지 않는다."""
+    print("[ERROR] LOGIN_ONLY 로그인/세션 실패", flush=True)
+    try:
+        window.scan_message.emit("[ERROR] LOGIN_ONLY 로그인/세션 실패")
+    except Exception:
+        pass
+    try:
+        window.lbl_hint.setText("LOGIN_ONLY 실패 — 창 유지. 콘솔 메시지 확인")
+    except Exception:
+        pass
+    try:
+        from PyQt5.QtWidgets import QMessageBox
+
+        QMessageBox.critical(
+            window,
+            "키움 로그인 오류",
+            "로그인 또는 모의투자 서버 확인에 실패했습니다. 앱은 종료하지 않습니다.",
+        )
+    except Exception:
+        pass
+
+
+def _stage2c_collect_only_fail_notice(window: Any, msg: str) -> None:
+    """COLLECT_ONLY 실패 안내. 계좌번호·USER_ID 를 출력하지 않는다."""
+    print("[ERROR] COLLECT_ONLY 로그인/수집 세션 실패", flush=True)
+    try:
+        window.scan_message.emit("[ERROR] COLLECT_ONLY 로그인/수집 세션 실패")
+    except Exception:
+        pass
+    try:
+        window.lbl_hint.setText("COLLECT_ONLY 실패 — 창 유지. 콘솔 메시지 확인")
+    except Exception:
+        pass
+    try:
+        from PyQt5.QtWidgets import QMessageBox
+
+        QMessageBox.critical(
+            window,
+            "키움 로그인 오류",
+            "로그인 또는 수집 준비에 실패했습니다. 앱은 종료하지 않습니다.",
+        )
+    except Exception:
+        pass
+
+
+def _apply_stage2c_collect_only_ui(window: Any, bridge: Any = None) -> None:
+    btn = getattr(window, "btn_overseas_login", None)
+    if btn is not None:
+        try:
+            btn.setEnabled(False)
+            btn.setToolTip("STAGE2C COLLECT_ONLY: 해외 로그인 금지")
+        except Exception:
+            pass
+    auto = getattr(window, "lbl_auto_start", None)
+    if auto is not None:
+        try:
+            auto.setText("수집 전용: 자동매매 차단")
+        except Exception:
+            pass
+    _refresh_collect_only_status(window, bridge)
+
+
+def _refresh_collect_only_status(window: Any, bridge: Any = None) -> None:
+    hint = getattr(window, "lbl_hint", None)
+    if hint is None:
+        return
+    try:
+        n = len(getattr(bridge, "codes", None) or []) if bridge is not None else 0
+        st = getattr(bridge, "stats", None) if bridge is not None else None
+        tick = int(getattr(st, "tick_callbacks", 0) or 0) if st is not None else 0
+        hoga = int(getattr(st, "hoga_callbacks", 0) or 0) if st is not None else 0
+        overflow = int(getattr(st, "dropped_overflow", 0) or 0) if st is not None else 0
+        write_ok = int(getattr(st, "write_ok", 0) or 0) if st is not None else 0
+        write_fail = int(getattr(st, "write_fail", 0) or 0) if st is not None else 0
+        writer = str(getattr(st, "shutdown_status", "-") or "-") if st is not None else "-"
+        hint.setText(
+            f"수집 전용: 엔진 미생성. 종목={n} 체결={tick} 호가={hoga} "
+            f"오버플로={overflow} 저장={write_ok}/{write_fail} writer={writer}"
+        )
+    except Exception:
+        try:
+            hint.setText("수집 전용: 엔진 미생성. 자동매매 차단")
+        except Exception:
+            pass
+
+
+def _apply_stage2c_login_only_ui(window: Any) -> None:
+    btn = getattr(window, "btn_overseas_login", None)
+    if btn is not None:
+        try:
+            btn.setEnabled(False)
+            btn.setToolTip("STAGE2C LOGIN_ONLY: 해외 로그인 금지")
+        except Exception:
+            pass
+    hint = getattr(window, "lbl_hint", None)
+    if hint is not None:
+        try:
+            hint.setText("HFT 로그인 전용: 엔진/Bridge/스캔/주문 없음")
+        except Exception:
+            pass
+    auto = getattr(window, "lbl_auto_start", None)
+    if auto is not None:
+        try:
+            auto.setText("자동시작: LOGIN_ONLY 차단")
+        except Exception:
+            pass
+
+
+def _stage2c_finish_login_only(
+    window: Any,
+    kiwoom: Any,
+    sess: Any,
+    account: str,
+    *,
+    watch_timer: Any = None,
+) -> None:
+    """로그인 성공 후 엔진·Bridge·스캔 없이 모의서버·연결 상태만 확인한다."""
+    from tools.stage2c_safe_runner import (
+        ATTR_MOCK_CONFIRMED,
+        abort_session,
+        assert_guard_intact,
+        bind_watch_timer,
+        confirm_login_only_mock_server,
+        SessionAbortError,
+    )
+
+    assert_guard_intact(kiwoom)
+    state = kiwoom.dynamicCall("GetConnectState()")
+    assert_guard_intact(kiwoom)
+    try:
+        window.kiwoom = kiwoom
+    except Exception:
+        pass
+    try:
+        gubun = confirm_login_only_mock_server(kiwoom)
+    except SessionAbortError as e:
+        if sess is not None:
+            abort_session(sess, str(e))
+        _apply_stage2c_login_only_ui(window)
+        try:
+            window.lbl_hint.setText("HFT 로그인 전용: 모의투자 서버 확인 실패. 세션 중단")
+        except Exception:
+            pass
+        raise
+    assert_guard_intact(kiwoom)
+    if sess is not None:
+        sess.mock_server_confirmed = True
+        try:
+            sess.window = window
+        except Exception:
+            pass
+    try:
+        setattr(kiwoom, ATTR_MOCK_CONFIRMED, True)
+    except Exception:
+        pass
+    msg = (
+        f"[STAGE2C] LOGIN_ONLY MOCK_SERVER_CONFIRMED GetServerGubun=1 "
+        f"GetConnectState={state} Guard=intact 엔진=0 Bridge=0"
+    )
+    print(msg, flush=True)
+    try:
+        from tools.stage2c_login_only_audit import emit_safe
+
+        emit_safe(sess, "MOCK_SERVER_CONFIRMED", status="ok", connect_state=state)
+    except Exception:
+        pass
+    try:
+        window.scan_message.emit(msg)
+    except Exception:
+        pass
+    try:
+        window.lbl_hint.setText(
+            f"HFT 로그인 전용: 모의서버 확인. 연결={state}. 자동매매 없음"
+        )
+    except Exception:
+        pass
+    _apply_stage2c_login_only_ui(window)
+    if sess is not None:
+        timer = watch_timer
+        if timer is None:
+            timer = QTimer(window)
+        bind_watch_timer(sess, timer)
+
+
+def _stage2c_finish_collect_only(
+    window: Any,
+    kiwoom: Any,
+    sess: Any,
+    account: str,
+    *,
+    watch_timer: Any = None,
+    codes: Optional[List[str]] = None,
+    directory: Optional[str] = None,
+) -> None:
+    """로그인 성공 후 엔진/스캔 없이 모의서버 확인 → attach_bridge → Guard 감시."""
+    from tools.stage2c_safe_runner import (
+        ATTR_MOCK_CONFIRMED,
+        CollectCodesError,
+        abort_session,
+        assert_guard_intact,
+        bind_watch_timer,
+        confirm_login_only_mock_server,
+        load_collect_codes,
+        SessionAbortError,
+    )
+
+    assert_guard_intact(kiwoom)
+    state = kiwoom.dynamicCall("GetConnectState()")
+    assert_guard_intact(kiwoom)
+    if str(state).strip() != "1":
+        err = SessionAbortError(f"COLLECT_ONLY 미연결: GetConnectState={state!r}")
+        if sess is not None:
+            abort_session(sess, str(err))
+        _apply_stage2c_collect_only_ui(window)
+        raise err
+    try:
+        window.kiwoom = kiwoom
+    except Exception:
+        pass
+    try:
+        window.engine = None
+    except Exception:
+        pass
+    try:
+        gubun = confirm_login_only_mock_server(kiwoom)
+    except SessionAbortError as e:
+        if sess is not None:
+            abort_session(sess, str(e))
+        _apply_stage2c_collect_only_ui(window)
+        try:
+            window.lbl_hint.setText("수집 전용: 모의투자 서버 확인 실패. 세션 중단")
+        except Exception:
+            pass
+        raise
+    assert_guard_intact(kiwoom)
+    if sess is not None:
+        sess.mock_server_confirmed = True
+        try:
+            sess.window = window
+        except Exception:
+            pass
+    try:
+        setattr(kiwoom, ATTR_MOCK_CONFIRMED, True)
+    except Exception:
+        pass
+    try:
+        selected = list(codes) if codes is not None else load_collect_codes()
+    except CollectCodesError as e:
+        if sess is not None:
+            abort_session(sess, str(e))
+        _apply_stage2c_collect_only_ui(window)
+        raise
+    if not selected:
+        err = CollectCodesError("COLLECT_ONLY 수집 종목 목록이 비어 있습니다")
+        if sess is not None:
+            abort_session(sess, str(err))
+        _apply_stage2c_collect_only_ui(window)
+        raise err
+    scalp_dir = directory or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "data", "scalp"
+    )
+    try:
+        from scalp.bridge import attach_bridge
+    except Exception as e:
+        err = SessionAbortError(f"COLLECT_ONLY scalp.bridge import 실패: {type(e).__name__}: {e}")
+        if sess is not None:
+            abort_session(sess, str(err))
+        raise err
+    try:
+        br = attach_bridge(
+            kiwoom,
+            selected,
+            scalp_dir,
+            on_log=lambda m: _scalp_log(m, window),
+        )
+    except Exception as e:
+        err = SessionAbortError(f"COLLECT_ONLY attach_bridge 실패: {type(e).__name__}: {e}")
+        if sess is not None:
+            abort_session(sess, str(err))
+        raise err
+    if br is None or not bool(getattr(br, "attached", False)):
+        err = SessionAbortError("COLLECT_ONLY Bridge 연결 실패")
+        if sess is not None:
+            abort_session(sess, str(err))
+        _apply_stage2c_collect_only_ui(window)
+        raise err
+    assert_guard_intact(kiwoom)
+    writer = getattr(br, "writer", None)
+    if writer is None or not bool(getattr(writer, "_started", False)):
+        err = SessionAbortError("COLLECT_ONLY WriterService 시작 실패")
+        if sess is not None:
+            abort_session(sess, str(err))
+        _apply_stage2c_collect_only_ui(window, br)
+        raise err
+    msg = (
+        f"[STAGE2C] COLLECT_ONLY MOCK_SERVER_CONFIRMED GetServerGubun=1 "
+        f"GetConnectState={state} Guard=intact 엔진=0 Bridge=1 codes={list(br.codes)}"
+    )
+    print(msg, flush=True)
+    try:
+        from tools.stage2c_login_only_audit import emit_safe
+
+        emit_safe(sess, "MOCK_SERVER_CONFIRMED", status="ok", connect_state=state)
+        emit_safe(
+            sess,
+            "COLLECT_BRIDGE_ATTACHED",
+            status="ok",
+            codes=len(list(getattr(br, "codes", []) or [])),
+        )
+    except Exception:
+        pass
+    try:
+        window.scan_message.emit(msg)
+    except Exception:
+        pass
+    _apply_stage2c_collect_only_ui(window, br)
+    if sess is not None:
+        timer = watch_timer
+        if timer is None:
+            timer = QTimer(window)
+        bind_watch_timer(sess, timer)
+
+
+def _scalp_bridge_of(kiwoom: Any) -> Any:
+    if kiwoom is None:
+        return None
+    return getattr(kiwoom, "_scalp_bridge", None)
+
+
+def _scalp_try_reregister(kiwoom: Any) -> None:
+    if kiwoom is not None and bool(getattr(kiwoom, "_stage2c_aborted", False)):
+        return
+    b = _scalp_bridge_of(kiwoom)
+    if b is None:
+        return
+    try:
+        b.reregister_hft_screens()
+    except Exception as e:
+        _scalp_log(f"제품 재등록 후 HFT 재등록 실패: {type(e).__name__}: {e}")
+        try:
+            b.stats.set_shutdown("ERROR")
+        except Exception as e2:
+            _scalp_log(f"ERROR 상태 기록 실패: {type(e2).__name__}: {e2}")
+
+
+def _scalp_try_sync(kiwoom: Any, codes: Any) -> None:
+    if kiwoom is None:
+        return
+    if bool(getattr(kiwoom, "_stage2c_aborted", False)):
+        return
+    b = _scalp_bridge_of(kiwoom)
+    live = b is not None and not bool(getattr(b, "closed", False))
+    try:
+        if live:
+            b.sync_targets(codes)
+            return
+        if str(os.environ.get("SCALP_ENABLED", "")).strip() != "1":
+            return
+        from scalp.bridge import ensure_bridge
+
+        scalp_dir = getattr(kiwoom, "_scalp_data_dir", None) or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", "scalp"
+        )
+        b = ensure_bridge(
+            kiwoom,
+            list(codes or []),
+            str(scalp_dir),
+            on_log=_scalp_log,
+        )
+        if b is None:
+            return
+        b.sync_targets(codes)
+    except Exception as e:
+        _scalp_log(f"종목 동기화 실패: {type(e).__name__}: {e}")
+
+
+def _scalp_try_close(kiwoom: Any) -> None:
+    b = _scalp_bridge_of(kiwoom)
+    if b is None:
+        return
+    try:
+        b.close()
+    except Exception as e:
+        _scalp_log(f"Writer 종료 실패: {type(e).__name__}: {e}")
+        try:
+            if getattr(b.stats, "shutdown_status", "") == "COMPLETE":
+                b.stats.set_shutdown("INCOMPLETE")
+        except Exception as e2:
+            _scalp_log(f"INCOMPLETE 기록 실패: {type(e2).__name__}: {e2}")
+
+
 _SCAN_DAYLOG_KEYS = ("1차 필터 통과", "2차 전략 통과", "필터 탈락 요약", "우량 눌림 후보", "우량 로테이션", "보정:", "bad ticker")
 _SCAN_LAST_SUMMARY: List[str] = []
 
@@ -2125,6 +2568,10 @@ class KiwoomOpenAPI(QAxWidget):
         )
 
     def login(self, timeout_ms: int = 30000) -> str:
+        if _stage2c_safe_mode():
+            from tools.stage2c_safe_runner import assert_ready_for_connect
+
+            assert_ready_for_connect(self)
         if self.isNull():
             raise RuntimeError(
                 "KHOPENAPI control not loaded. "
@@ -2186,6 +2633,42 @@ class KiwoomOpenAPI(QAxWidget):
             reason = _kiwoom_login_error_text(err)
             raise RuntimeError(f"Login failed: err_code={err} ({reason}) last_error={self._last_error}")
 
+        if _stage2c_login_only():
+            from tools.stage2c_safe_runner import ATTR_SESSION, LOGIN_ONLY_LOGIN_RESULT
+
+            try:
+                self.dynamicCall("GetConnectState()")
+            except Exception:
+                pass
+            try:
+                from tools.stage2c_login_only_audit import emit_safe
+
+                emit_safe(
+                    getattr(self, ATTR_SESSION, None),
+                    "LOGIN_SUCCEEDED",
+                    status="ok",
+                )
+            except Exception:
+                pass
+            return LOGIN_ONLY_LOGIN_RESULT
+        if _stage2c_collect_only():
+            from tools.stage2c_safe_runner import ATTR_SESSION, COLLECT_ONLY_LOGIN_RESULT
+
+            try:
+                self.dynamicCall("GetConnectState()")
+            except Exception:
+                pass
+            try:
+                from tools.stage2c_login_only_audit import emit_safe
+
+                emit_safe(
+                    getattr(self, ATTR_SESSION, None),
+                    "LOGIN_SUCCEEDED",
+                    status="ok",
+                )
+            except Exception:
+                pass
+            return COLLECT_ONLY_LOGIN_RESULT
         return self._get_login_account()
 
     def request_daily_closes(self, code: str, end_date_yyyymmdd: str, count: int = 60) -> List[int]:
@@ -2610,6 +3093,7 @@ class KiwoomOpenAPI(QAxWidget):
         except Exception:
             pass
         self.set_real_reg(codes, fid_list=fid_list)
+        _scalp_try_reregister(self)
         return len(codes)
 
     def get_master_stock_flags(self, code: str) -> str:
@@ -9474,6 +9958,7 @@ class TradingEngine:
         # 현재가 선반영은 GUI 쪽 백그라운드 프리패치에서 처리(대량 종목 시 UI 정지 방지)
 
         self.kiwoom.set_real_reg(self.stock_codes, fid_list="10")
+        _scalp_try_sync(self.kiwoom, self.stock_codes)
         self._log_stock_state_summary()
         self._maybe_start_auto_backtest(force=True)
         if self.on_log is not None:
@@ -9527,6 +10012,23 @@ class TradingWindow(QMainWindow):
     scan_message = pyqtSignal(str)
     log_message = pyqtSignal(str)
     _prefetch_ui_tick = pyqtSignal()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if _stage2c_safe_mode():
+            try:
+                from tools.stage2c_safe_runner import shutdown_session
+
+                sess = getattr(self, "_stage2c_session", None)
+                if sess is None and self.kiwoom is not None:
+                    sess = getattr(self.kiwoom, "_stage2c_session", None)
+                if sess is not None:
+                    shutdown_session(sess, terminal="COMPLETE")
+                    super().closeEvent(event)
+                    return
+            except Exception as e:
+                _scalp_log(f"STAGE2C 종료 실패: {type(e).__name__}: {e}")
+        _scalp_try_close(self.kiwoom)
+        super().closeEvent(event)
 
     def __init__(self):
         super().__init__()
@@ -9859,6 +10361,8 @@ class TradingWindow(QMainWindow):
         self.scan_finished.connect(self._on_scan_finished)
         self.scan_message.connect(self._on_scan_message)
         self.log_message.connect(self._append_log_ui)
+        if _stage2c_login_only():
+            _apply_stage2c_login_only_ui(self)
 
     def _build_overseas_tab(self) -> None:
         row_top = QHBoxLayout()
@@ -9954,6 +10458,20 @@ class TradingWindow(QMainWindow):
             pass
 
     def _check_overseas_login(self) -> None:
+        if _stage2c_login_only():
+            self._append_overseas_log("[STAGE2C] LOGIN_ONLY: 해외 로그인 차단")
+            try:
+                self.lbl_overseas_status.setText("해외 API: LOGIN_ONLY 차단")
+            except Exception:
+                pass
+            return
+        if _stage2c_collect_only():
+            self._append_overseas_log("[STAGE2C] COLLECT_ONLY: 해외 로그인 차단")
+            try:
+                self.lbl_overseas_status.setText("해외 API: COLLECT_ONLY 차단")
+            except Exception:
+                pass
+            return
         if self.overseas_api is None:
             try:
                 self.overseas_api = KiwoomOverseasOpenAPI()
@@ -10402,6 +10920,13 @@ class TradingWindow(QMainWindow):
 
     def _toggle_engine(self) -> None:
         if self.engine is None:
+            return
+        if _stage2c_safe_mode():
+            if self.engine.timer.isActive():
+                self.engine.timer.stop()
+            self.lbl_hint.setText("HFT 검증 모드: 자동매매 재개 금지")
+            self._append_log("[STAGE2C] 자동매매 재개 차단")
+            self.refresh_ui()
             return
         if self.engine.timer.isActive():
             self.engine.timer.stop()
@@ -11298,6 +11823,23 @@ def main():
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    _login_only_err = _abort_if_login_only_without_safe()
+    if _login_only_err:
+        print(f"[STAGE2C] {_login_only_err}", flush=True)
+        sys.exit(2)
+    _collect_only_err = _abort_if_collect_only_env()
+    if _collect_only_err:
+        print(f"[STAGE2C] {_collect_only_err}", flush=True)
+        sys.exit(2)
+    _collect_codes: Optional[List[str]] = None
+    if _stage2c_collect_only():
+        try:
+            from tools.stage2c_safe_runner import load_collect_codes
+
+            _collect_codes = load_collect_codes()
+        except Exception as e:
+            print(f"[STAGE2C] COLLECT_ONLY 종목 코드 로드 실패: {e}", flush=True)
+            sys.exit(2)
     # pythonw 등 콘솔 없이 실행될 때 별도 CMD 창 — MYSTOCK_CONSOLE=1
     if os.environ.get("MYSTOCK_CONSOLE", "").strip().lower() in ("1", "true", "yes", "y"):
         try:
@@ -11355,16 +11897,78 @@ def main():
     pw_configured = bool(account_password)
 
     kiwoom = KiwoomOpenAPI()
+    _stage2c_sess = None
+    _stage2c_prepare_ok = True
+    if _stage2c_safe_mode():
+        try:
+            from tools.stage2c_safe_runner import prepare_api
+
+            _stage2c_sess = prepare_api(kiwoom, on_log=lambda m: window.scan_message.emit(str(m)))
+            window._stage2c_session = _stage2c_sess
+            if _stage2c_login_only() or _stage2c_collect_only():
+                _audit = getattr(_stage2c_sess, "audit", None)
+                if (
+                    _audit is None
+                    or not bool(getattr(_audit, "ready", False))
+                    or not bool(getattr(_audit, "healthy", False))
+                ):
+                    _stage2c_prepare_ok = False
+                    _mode = "LOGIN_ONLY" if _stage2c_login_only() else "COLLECT_ONLY"
+                    print(
+                        f"[STAGE2C] {_mode} 감사 로그 미준비 — CommConnect 하지 않습니다.",
+                        flush=True,
+                    )
+        except Exception as e:
+            _stage2c_prepare_ok = False
+            if _stage2c_login_only():
+                _msg = "LOGIN_ONLY 준비 실패 — 로그인하지 않습니다"
+            elif _stage2c_collect_only():
+                _msg = "COLLECT_ONLY 준비 실패 — 로그인하지 않습니다"
+            else:
+                _msg = f"Guard 설치 실패 — 로그인 중단: {type(e).__name__}: {e}"
+            print(f"[STAGE2C] {_msg}", flush=True)
+            try:
+                window.scan_message.emit(f"[STAGE2C] {_msg}")
+                window.lbl_hint.setText("HFT 검증 모드: Guard 설치 실패. 로그인하지 않습니다.")
+            except Exception:
+                pass
 
     # Qt 이벤트 루프가 이미 돌고 있을 때 CommConnect/실시간 이벤트가 잘 들어오도록
     # 로그인/트레이딩 시작을 "다음 틱"에 스케줄링합니다.
     def _start_after_event_loop():
         try:
-            window.scan_message.emit(
-                f"[BOOT] 계좌비번 전달 상태: {'설정됨' if pw_configured else '미설정'} "
-                "(미설정이면 잔고조회가 0건으로 보일 수 있음)"
-            )
+            if not _stage2c_login_only() and not _stage2c_collect_only():
+                window.scan_message.emit(
+                    f"[BOOT] 계좌비번 전달 상태: {'설정됨' if pw_configured else '미설정'} "
+                    "(미설정이면 잔고조회가 0건으로 보일 수 있음)"
+                )
+            _s2c = _stage2c_safe_mode()
+            if _s2c:
+                from tools.stage2c_safe_runner import (
+                    assert_guard_intact,
+                    assert_ready_for_connect,
+                    bind_watch_timer,
+                    block_timer_restart,
+                    confirm_timer_stopped,
+                    wrap_engine_start_stop_timer,
+                )
+
+                assert_ready_for_connect(kiwoom)
             account = kiwoom.login()
+            if _s2c:
+                assert_guard_intact(kiwoom)
+            if _stage2c_login_only():
+                _stage2c_finish_login_only(window, kiwoom, _stage2c_sess, account)
+                return
+            if _stage2c_collect_only():
+                _stage2c_finish_collect_only(
+                    window,
+                    kiwoom,
+                    _stage2c_sess,
+                    account,
+                    codes=_collect_codes,
+                )
+                return
             window.scan_message.emit(f"[BOOT] 선택 계좌: {account}")
             env_acc = os.environ.get("KIWOOM_ACCOUNT_NO", "").strip()
             if not env_acc:
@@ -11387,6 +11991,8 @@ def main():
             trade_tracker.load()
             window.scan_message.emit(f"[BOOT] 거래기록 파일: {os.path.basename(trade_tracker.csv_path)}")
             # UI 멈춤 방지: 엔진은 즉시 시작하고 전체시장 스캔은 백그라운드 스레드에서 수행
+            if _s2c:
+                assert_guard_intact(kiwoom)
             engine = TradingEngine(kiwoom, account, [])
             try:
                 engine.realized_pnl_krw = float(trade_tracker.total_realized_pnl_krw())
@@ -11398,8 +12004,47 @@ def main():
                 ohlcv_loader=engine._get_cached_strat_ohlcv,
             )
             attach_trade_logging(engine, trade_tracker)
+            if _s2c:
+                wrap_engine_start_stop_timer(engine)
+                if _stage2c_sess is not None:
+                    _stage2c_sess.engine = engine
+                    _stage2c_sess.window = window
+                assert_guard_intact(kiwoom)
             engine.start(account_password=account_password)
+            if _s2c:
+                confirm_timer_stopped(engine)
+                if _stage2c_sess is not None:
+                    block_timer_restart(engine, _stage2c_sess)
             window.set_engine(engine, account, kiwoom, trade_tracker)
+            if _s2c:
+                assert_guard_intact(kiwoom)
+            if str(os.environ.get("SCALP_ENABLED", "")).strip() == "1":
+                try:
+                    from scalp.bridge import attach_bridge
+                except Exception as e:
+                    _scalp_log(f"scalp.bridge import 실패: {type(e).__name__}: {e}", window)
+                else:
+                    try:
+                        scalp_dir = os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)), "data", "scalp"
+                        )
+                        br = attach_bridge(
+                            kiwoom,
+                            list(engine.stock_codes or []),
+                            scalp_dir,
+                            on_log=lambda m: _scalp_log(m, window),
+                        )
+                        if br is None:
+                            _scalp_log("attach 거부 또는 롤백 (상태 ERROR)", window)
+                        else:
+                            _scalp_log(
+                                f"연결됨 selected={br.codes} excluded={getattr(br, 'excluded_codes', [])} dir={scalp_dir}",
+                                window,
+                            )
+                    except Exception as e:
+                        _scalp_log(f"attach 실패: {type(e).__name__}: {e}", window)
+            if _s2c and _stage2c_sess is not None:
+                bind_watch_timer(_stage2c_sess, QTimer(window))
             scan_state = {
                 "running": False,
                 "last_scan_at": None,  # type: Optional[datetime.datetime]
@@ -11471,6 +12116,19 @@ def main():
             # 시작 시에는 장시간이면 자동 스캔, 장외에서는 테스트스캔 ON일 때만 강제 스캔
             _maybe_start_scan(force=bool(window.force_scan_anytime))
         except Exception as e:
+            if _stage2c_sess is not None:
+                try:
+                    from tools.stage2c_safe_runner import abort_session
+
+                    abort_session(_stage2c_sess, str(e))
+                except Exception:
+                    pass
+            if _stage2c_login_only():
+                _stage2c_login_only_fail_notice(window, str(e))
+                return
+            if _stage2c_collect_only():
+                _stage2c_collect_only_fail_notice(window, str(e))
+                return
             # 로그인/계좌 문제는 창을 유지해 원인 확인 가능하게 한다 (즉시 quit 금지)
             msg = str(e)
             print(f"[ERROR] Kiwoom login/account failed: {msg}", flush=True)
@@ -11497,7 +12155,24 @@ def main():
                 pass
             # app.quit() 하지 않음 — 사용자가 메시지를 읽을 수 있게 유지
 
-    QTimer.singleShot(0, _start_after_event_loop)
+    if _stage2c_prepare_ok:
+        QTimer.singleShot(0, _start_after_event_loop)
+    else:
+        print("[STAGE2C] Guard 미설치 — CommConnect/로그인/엔진/Bridge 를 시작하지 않습니다.", flush=True)
+
+    def _on_about_to_quit() -> None:
+        sess = _stage2c_sess or getattr(kiwoom, "_stage2c_session", None)
+        if sess is not None:
+            try:
+                from tools.stage2c_safe_runner import shutdown_session
+
+                shutdown_session(sess, terminal="COMPLETE")
+                return
+            except Exception as e:
+                print(f"[STAGE2C] aboutToQuit 종료 실패: {type(e).__name__}: {e}", flush=True)
+        _scalp_try_close(kiwoom)
+
+    app.aboutToQuit.connect(_on_about_to_quit)
     sys.exit(app.exec_())
 
 
